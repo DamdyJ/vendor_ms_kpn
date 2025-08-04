@@ -2372,6 +2372,327 @@ const Material = {
             throw error;
         }
     },
+
+    // Create material request - creates both staging and mat_sap_data records
+    createMaterialRequest: async (requestData, userInfo, attachments) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    // 1. Validate material group and subgroup IDs from frontend
+                    let materialSubGroupId = null;
+                    if (requestData.material_group && requestData.sub_material_group) {
+                        const groupId = parseInt(requestData.material_group);
+                        const subGroupId = parseInt(requestData.sub_material_group);
+                        
+                        // Verify that the subgroup belongs to the selected group and both exist
+                        const subGroupResult = await client.query(
+                            `SELECT mis.id FROM mat_item_sub_group mis 
+                             JOIN mat_item_group mig ON mis.item_group_id = mig.id 
+                             WHERE mis.id = $1 AND mig.id = $2 
+                             AND mis.deleted_at IS NULL AND mig.deleted_at IS NULL`,
+                            [subGroupId, groupId]
+                        );
+                        
+                        if (subGroupResult.rows.length > 0) {
+                            materialSubGroupId = subGroupId;
+                        }
+                    }
+
+                    // Require valid subgroup - throw error if not found
+                    if (!materialSubGroupId) {
+                        throw new Error("Material group and sub-material group are required and must be valid. Please select valid material group and sub-material group from the available options.");
+                    }
+
+                    // 2. Generate unique material code based on resolved subgroup
+                    let newCode;
+                    // Get group and subgroup codes
+                    const groupSubgroupQuery = await client.query(
+                        `SELECT mig.code as group_code, mis.code as subgroup_code 
+                         FROM mat_item_sub_group mis 
+                         JOIN mat_item_group mig ON mis.item_group_id = mig.id 
+                         WHERE mis.id = $1`,
+                        [materialSubGroupId]
+                    );
+
+                    if (groupSubgroupQuery.rows.length > 0) {
+                        const { group_code, subgroup_code } = groupSubgroupQuery.rows[0];
+                        
+                        // Get the latest code for this subgroup pattern
+                        const codePattern = `${group_code}.${subgroup_code}.%`;
+                        const latestCodeQuery = await client.query(
+                            `SELECT code FROM mat_sap_data 
+                             WHERE code LIKE $1 
+                             ORDER BY code DESC LIMIT 1`,
+                            [codePattern]
+                        );
+
+                        if (latestCodeQuery.rows.length > 0) {
+                            const lastCode = latestCodeQuery.rows[0].code;
+                            const parts = lastCode.split('.');
+                            const lastSequence = parseInt(parts[2]) + 1;
+                            newCode = `${group_code}.${subgroup_code}.${String(lastSequence).padStart(3, '0')}`;
+                        } else {
+                            // First code for this subgroup
+                            newCode = `${group_code}.${subgroup_code}.001`;
+                        }
+                    } else {
+                        // This should never happen since we validate materialSubGroupId above
+                        throw new Error("Unable to retrieve group and subgroup codes. Please contact system administrator.");
+                    }
+
+                    // 3. Create comprehensive description (technical specs only)
+                    const descriptionParts = [];
+                    if (requestData.part_number) descriptionParts.push(`P/N ${requestData.part_number}`);
+                    descriptionParts.push(requestData.deskripsi_material);
+                    if (requestData.type) descriptionParts.push(requestData.type);
+                    if (requestData.series) descriptionParts.push(requestData.series);
+                    if (requestData.dimensi) descriptionParts.push(requestData.dimensi);
+                    if (requestData.berat) descriptionParts.push(requestData.berat);
+                    if (requestData.bahan) descriptionParts.push(requestData.bahan);
+                    if (requestData.power) descriptionParts.push(requestData.power);
+                    if (requestData.plant) descriptionParts.push(requestData.plant);
+                    if (requestData.other_specification) descriptionParts.push(requestData.other_specification);
+                    if (requestData.catatan_tambahan) descriptionParts.push(requestData.catatan_tambahan);
+                    
+                    const description = descriptionParts.join(' ');
+                    const longText = ''; // Leave long_text empty
+
+                    // 4. Insert into mat_sap_data
+                    const matSapData = {
+                        code: newCode,
+                        name: requestData.nama_material,
+                        description: description,
+                        long_text: longText,
+                        type: 'SPAR',
+                        unit_of_measurement: requestData.uom,
+                        material_sub_group_id: materialSubGroupId,
+                        created_by: userInfo.user_id,
+                        updated_by: userInfo.user_id,
+                        created_at: 'NOW()',
+                        updated_at: 'NOW()',
+                        dffromclient: false
+                    };
+
+                    const [matSapQuery, matSapValues] = Crud.insertItem(
+                        'mat_sap_data',
+                        matSapData,
+                        'id'
+                    );
+
+                    const matSapResult = await client.query(matSapQuery, matSapValues);
+                    const materialId = matSapResult.rows[0].id;
+
+                    // 5. Insert into mat_reqcreate
+                    const stagingData = {
+                        tanggal_permintaan: requestData.tanggal_permintaan,
+                        nama_pemohon: userInfo.nama_pemohon,
+                        departemen: userInfo.departemen,
+                        nama_material: requestData.nama_material,
+                        deskripsi_material: requestData.deskripsi_material,
+                        material_group: requestData.material_group,
+                        sub_material_group: requestData.sub_material_group,
+                        register_number: requestData.register_number,
+                        part_number: requestData.part_number,
+                        dimensi: requestData.dimensi,
+                        berat: requestData.berat,
+                        bahan: requestData.bahan,
+                        type: requestData.type,
+                        series: requestData.series,
+                        power: requestData.power,
+                        other_specification: requestData.other_specification,
+                        uom: requestData.uom,
+                        plant: requestData.plant,
+                        storage_location: requestData.storage_location,
+                        valuation_type: requestData.valuation_type,
+                        has_attachment: attachments && attachments.length > 0,
+                        catatan_tambahan: requestData.catatan_tambahan,
+                        status: 'processed',
+                        material_id: materialId,
+                        created_by: userInfo.user_id,
+                        created_at: 'NOW()'
+                    };
+
+                    const [stagingQuery, stagingValues] = Crud.insertItem(
+                        'mat_reqcreate',
+                        stagingData,
+                        'id'
+                    );
+
+                    const stagingResult = await client.query(stagingQuery, stagingValues);
+
+                    // 6. Handle attachments if provided
+                    const uploadedFiles = [];
+                    if (attachments && attachments.length > 0) {
+                        for (const file of attachments) {
+                            const mimeType = getMimeType(file.extension);
+
+                            const attachmentData = {
+                                material_id: materialId,
+                                attachment: file.newName,
+                                type: mimeType,
+                                created_at: 'NOW()',
+                                updated_at: 'NOW()'
+                            };
+
+                            const [attachQuery, attachValues] = Crud.insertItem(
+                                'mat_attachment',
+                                attachmentData,
+                                'id'
+                            );
+
+                            const attachResult = await client.query(attachQuery, attachValues);
+
+                            uploadedFiles.push({
+                                id: attachResult.rows[0].id,
+                                originalName: file.originalName,
+                                savedAs: file.newName,
+                                type: mimeType
+                            });
+                        }
+                    }
+
+                    await client.query("COMMIT");
+
+                    // 7. Save files to disk after successful database operations
+                    if (attachments && attachments.length > 0) {
+                        const publicDir = path.join(path.resolve(), "./backend/public");
+                        
+                        for (const file of attachments) {
+                            const finalPath = path.join(publicDir, file.newName);
+                            fs.copyFileSync(file.tempPath, finalPath);
+                            fs.unlinkSync(file.tempPath); // Clean up temp file
+                        }
+                    }
+
+                    return {
+                        stagingId: stagingResult.rows[0].id,
+                        materialId: materialId,
+                        materialCode: newCode,
+                        uploadedFiles: uploadedFiles
+                    };
+
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    
+                    // Clean up temp files on error
+                    if (attachments && attachments.length > 0) {
+                        for (const file of attachments) {
+                            if (fs.existsSync(file.tempPath)) {
+                                fs.unlinkSync(file.tempPath);
+                            }
+                        }
+                    }
+                    
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error creating material request:", error);
+            throw error;
+        }
+    },
+
+    // Get all material requests from mat_reqcreate table
+    getMaterialRequests: async (page = 1, pageSize = 10, searchQuery = "", sort = "created_at", order = "desc") => {
+        try {
+            return await DBClientWrapper(async client => {
+                const offset = (page - 1) * pageSize;
+                let whereClause = "WHERE 1=1";
+                const params = [];
+
+                if (searchQuery.trim()) {
+                    params.push(`%${searchQuery}%`);
+                    whereClause += ` AND (
+                        nama_material ILIKE $${params.length} OR 
+                        nama_pemohon ILIKE $${params.length} OR 
+                        departemen ILIKE $${params.length} OR
+                        material_group ILIKE $${params.length}
+                    )`;
+                }
+
+                // Get total count
+                const countQuery = `SELECT COUNT(*) FROM mat_reqcreate ${whereClause}`;
+                const countResult = await client.query(countQuery, params);
+                const totalCount = parseInt(countResult.rows[0].count);
+
+                // Get paginated results
+                const dataQuery = `
+                    SELECT 
+                        id,
+                        tanggal_permintaan,
+                        nama_pemohon,
+                        departemen,
+                        nama_material,
+                        material_group,
+                        sub_material_group,
+                        uom,
+                        plant,
+                        storage_location,
+                        has_attachment,
+                        status,
+                        material_id,
+                        created_at
+                    FROM mat_reqcreate 
+                    ${whereClause}
+                    ORDER BY ${sort} ${order.toUpperCase()}
+                    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+                `;
+
+                params.push(pageSize, offset);
+                const dataResult = await client.query(dataQuery, params);
+
+                return {
+                    data: dataResult.rows,
+                    pagination: {
+                        totalCount,
+                        totalPages: Math.ceil(totalCount / pageSize),
+                        currentPage: page,
+                        pageSize
+                    }
+                };
+            });
+        } catch (error) {
+            console.error("Error fetching material requests:", error);
+            throw error;
+        }
+    },
+
+    // Get material request by ID
+    getMaterialRequestById: async (requestId) => {
+        try {
+            return await DBClientWrapper(async client => {
+                const result = await client.query(
+                    `SELECT 
+                        mrs.*,
+                        msd.code as material_code,
+                        msd.name as material_name
+                    FROM mat_reqcreate mrs
+                    LEFT JOIN mat_sap_data msd ON mrs.material_id = msd.id
+                    WHERE mrs.id = $1`,
+                    [requestId]
+                );
+
+                if (result.rows.length === 0) {
+                    return null;
+                }
+
+                const request = result.rows[0];
+
+                // Get attachments if material was created
+                if (request.material_id) {
+                    const attachments = await Material.getMaterialAttachments(request.material_id);
+                    request.attachments = attachments;
+                }
+
+                return request;
+            });
+        } catch (error) {
+            console.error("Error fetching material request by ID:", error);
+            throw error;
+        }
+    }
 };
 
 module.exports = Material;

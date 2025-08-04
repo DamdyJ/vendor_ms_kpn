@@ -8,6 +8,11 @@ router.get("/groups", MaterialController.getMaterialGroups);
 // Get all material groups for dropdown (no pagination)
 router.get("/groups/dropdown", MaterialController.getAllMaterialGroups);
 
+// Material request endpoints
+router.post("/request", AuthToken.authSession, MaterialController.submitMaterialRequest);
+router.get("/requests", MaterialController.getMaterialRequests);
+router.get("/requests/:requestId", MaterialController.getMaterialRequestById);
+
 // Get attachments for materials by array of codes
 router.post("/by-codes", MaterialController.getAttachmentsByCodes);
 

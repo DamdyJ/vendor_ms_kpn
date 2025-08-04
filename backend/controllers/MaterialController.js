@@ -1148,6 +1148,259 @@ const MaterialController = {
             });
         }
     },
+
+    // Submit material request form
+    submitMaterialRequest: async (req, res) => {
+        const tempFilePaths = [];
+
+        try {
+            const userInfo = {
+                nama_pemohon: req.cookies.username || "Unknown User",
+                departemen: req.cookies.role || "Unknown Department",
+                user_id: req.cookies.user_id || "system",
+            };
+
+            // Parse form data with formidable
+            const form = new formidable.IncomingForm();
+            form.options.multiples = true;
+            form.options.maxFileSize = 5 * 1024 * 1024; // 5MB max file size
+
+            const [fields, items] = await form.parse(req);
+
+            // Extract form data from fields (formidable returns arrays)
+            const getFieldValue = fieldName => {
+                return fields[fieldName] ? fields[fieldName][0] : null;
+            };
+
+            const requestData = {
+                tanggal_permintaan:
+                    getFieldValue("tanggal_permintaan") ||
+                    new Date().toISOString().split("T")[0],
+                nama_material: getFieldValue("nama_material"),
+                deskripsi_material: getFieldValue("deskripsi_material"),
+                material_group: getFieldValue("material_group"),
+                sub_material_group: getFieldValue("sub_material_group"),
+                register_number: getFieldValue("register_number"),
+                part_number: getFieldValue("part_number"),
+                dimensi: getFieldValue("dimensi"),
+                berat: getFieldValue("berat"),
+                bahan: getFieldValue("bahan"),
+                type: getFieldValue("type"),
+                series: getFieldValue("series"),
+                power: getFieldValue("power"),
+                other_specification: getFieldValue("other_specification"),
+                uom: getFieldValue("uom"),
+                plant: getFieldValue("plant"),
+                storage_location: getFieldValue("storage_location"),
+                valuation_type: getFieldValue("valuation_type"),
+                catatan_tambahan: getFieldValue("catatan_tambahan"),
+            };
+
+            // Debug: Log the received data
+            console.log("Received form data:", {
+                material_group: requestData.material_group,
+                sub_material_group: requestData.sub_material_group,
+                material_group_type: typeof requestData.material_group,
+                sub_material_group_type: typeof requestData.sub_material_group,
+            });
+
+            // Validate required fields
+            if (
+                !requestData.nama_material ||
+                !requestData.deskripsi_material ||
+                !requestData.uom ||
+                !requestData.material_group ||
+                !requestData.sub_material_group
+            ) {
+                res.status(400).json({
+                    success: false,
+                    message:
+                        "Required fields missing: nama_material, deskripsi_material, uom, material_group, and sub_material_group are required",
+                });
+
+                return;
+            }
+
+            // Handle file attachments
+            const files = items.files || items.file || [];
+            const attachments = [];
+            const extensions = ["pdf", "doc", "docx", "png", "jpg", "jpeg"];
+
+            if (files && files.length > 0) {
+                for (const file of files) {
+                    try {
+                        // Generate timestamp for unique filename
+                        const timestamp = Date.now().toString();
+
+                        // Split filename to get extension
+                        let name = file.originalFilename.split(".");
+                        name[0] = name[0].replace(/ /g, "_");
+                        const extension = name[name.length - 1].toLowerCase();
+
+                        // Check if extension is allowed
+                        if (!extensions.includes(extension)) {
+                            throw new Error("File format invalid");
+                        }
+
+                        // Create new filename with timestamp
+                        const newName = `${name
+                            .slice(0, -1)
+                            .join(".")}_${timestamp}.${extension}`;
+
+                        // Save the temporary file path for cleanup
+                        tempFilePaths.push(file.filepath);
+
+                        // Add to attachments list
+                        attachments.push({
+                            tempPath: file.filepath,
+                            newName,
+                            extension,
+                            originalName: file.originalFilename,
+                        });
+                    } catch (error) {
+                        if (error.message === "File format invalid") {
+                            res.status(400).json({
+                                success: false,
+                                message:
+                                    "Invalid file format. Please upload files with valid extensions: " +
+                                    extensions.join(", "),
+                            });
+
+                            return;
+                        }
+                        throw error;
+                    }
+                }
+            }
+
+            // Create material request (creates both staging and mat_sap_data records)
+            const result = await Material.createMaterialRequest(
+                requestData,
+                userInfo,
+                attachments
+            );
+
+            res.status(201).json({
+                success: true,
+                message: "Material request submitted successfully",
+                data: {
+                    stagingId: result.stagingId,
+                    materialId: result.materialId,
+                    materialCode: result.materialCode,
+                    uploadedFiles: result.uploadedFiles,
+                },
+            });
+        } catch (error) {
+            console.error("Submit material request error:", error);
+
+            // Clean up temp files on error
+            tempFilePaths.forEach(tempPath => {
+                if (fs.existsSync(tempPath)) {
+                    fs.unlinkSync(tempPath);
+                }
+            });
+
+            if (error.code === 1016) {
+                res.status(400).json({
+                    success: false,
+                    message: "File size exceeded. Maximum file size is 5MB",
+                });
+                return;
+            }
+
+            // Handle validation errors
+            if (
+                error.message.includes(
+                    "Material group and sub-material group are required"
+                )
+            ) {
+                res.status(400).json({
+                    success: false,
+                    message: error.message,
+                });
+                return;
+            }
+
+            if (
+                error.message.includes(
+                    "Unable to retrieve group and subgroup codes"
+                )
+            ) {
+                res.status(500).json({
+                    success: false,
+                    message: error.message,
+                });
+                return;
+            }
+
+            res.status(500).json({
+                success: false,
+                message: "Failed to submit material request",
+                error: error.message,
+            });
+        }
+    },
+
+    // Get all material requests
+    getMaterialRequests: async (req, res) => {
+        try {
+            const page = parseInt(req.query.page) || 1;
+            const pageSize = parseInt(req.query.pageSize) || 10;
+            const searchQuery = req.query.q || "";
+            const sort = req.query.sort || "created_at";
+            const order = req.query.order || "desc";
+
+            const result = await Material.getMaterialRequests(
+                page,
+                pageSize,
+                searchQuery,
+                sort,
+                order
+            );
+
+            res.status(200).json({
+                success: true,
+                data: result.data,
+                searchQuery: searchQuery,
+                pagination: result.pagination,
+            });
+        } catch (error) {
+            console.error("Get material requests error:", error);
+            res.status(500).json({
+                success: false,
+                message: "Failed to fetch material requests",
+                error: error.message,
+            });
+        }
+    },
+
+    // Get material request by ID
+    getMaterialRequestById: async (req, res) => {
+        try {
+            const { requestId } = req.params;
+            const request = await Material.getMaterialRequestById(requestId);
+
+            if (!request) {
+                res.status(404).json({
+                    success: false,
+                    message: "Material request not found",
+                });
+                return;
+            }
+
+            res.status(200).json({
+                success: true,
+                data: request,
+            });
+        } catch (error) {
+            console.error("Get material request by ID error:", error);
+            res.status(500).json({
+                success: false,
+                message: "Failed to fetch material request",
+                error: error.message,
+            });
+        }
+    },
 };
 
 module.exports = MaterialController;
