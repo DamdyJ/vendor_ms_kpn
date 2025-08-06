@@ -18,12 +18,20 @@ const MaterialEmail = {
 
                 return `
             <tr>
-                <td style="padding: 8px; border: 1px solid #ccc;">${edit.material_code}</td>
-                <td style="padding: 8px; border: 1px solid #ccc;">${edit.material_name || ""}</td>
+                <td style="padding: 8px; border: 1px solid #ccc;">${
+                    edit.material_code
+                }</td>
+                <td style="padding: 8px; border: 1px solid #ccc;">${
+                    edit.material_name || ""
+                }</td>
                 <td style="padding: 8px; border: 1px solid #ccc;">${editType}</td>
                 <td style="padding: 8px; border: 1px solid #ccc;">${editContent}</td>
-                <td style="padding: 8px; border: 1px solid #ccc;">${edit.edited_by || "Unknown"}</td>
-                <td style="padding: 8px; border: 1px solid #ccc;">${new Date(edit.created_at).toLocaleString("en-GB", { timeZone: "Asia/Jakarta" })}</td>
+                <td style="padding: 8px; border: 1px solid #ccc;">${
+                    edit.edited_by || "Unknown"
+                }</td>
+                <td style="padding: 8px; border: 1px solid #ccc;">${new Date(
+                    edit.created_at
+                ).toLocaleString("en-GB", { timeZone: "Asia/Jakarta" })}</td>
             </tr>`;
             })
             .join("");
@@ -33,7 +41,7 @@ const MaterialEmail = {
         <body style="font-family: Arial, sans-serif; margin: 20px;">
             <h3>Material Updates - ${timeWindow}</h3>
             <p>The following materials have been edited and need review:</p>
-            
+
             <table style="border-collapse: collapse; width: 100%; margin: 20px 0;">
                 <thead>
                     <tr style="background-color: #f0f0f0;">
@@ -49,9 +57,11 @@ const MaterialEmail = {
                     ${materialRows}
                 </tbody>
             </table>
-            
+
             <p>Total materials: ${materialEdits.length}</p>
-            <p><small>Generated: ${new Date().toLocaleString("en-GB", { timeZone: "Asia/Jakarta" })} (Asia/Jakarta)</small></p>
+            <p><small>Generated: ${new Date().toLocaleString("en-GB", {
+                timeZone: "Asia/Jakarta",
+            })} (Asia/Jakarta)</small></p>
         </body>
         </html>`;
     },

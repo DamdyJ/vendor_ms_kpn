@@ -510,7 +510,7 @@ const Material = {
                     FROM mat_sap_data m
                     JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                     JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                    WHERE mig.id = $1
+                    WHERE mig.id = $1 AND (m.approval_status IS NULL OR m.approval_status = 'approved')
                     `,
                     [groupId]
                 );
@@ -550,7 +550,7 @@ const Material = {
                     FROM mat_sap_data m
                     JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                     JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                    WHERE mig.id = $1
+                    WHERE mig.id = $1 AND (m.approval_status IS NULL OR m.approval_status = 'approved')
                     ORDER BY ${sortField}
                     LIMIT $2 OFFSET $3
                     `,
@@ -622,8 +622,10 @@ const Material = {
                 const sortField = getCodeSortClause("m.code", order);
 
                 // Build where clause and params based on search query
-                let whereClause = "m.material_sub_group_id = $1";
-                let countWhereClause = "m.material_sub_group_id = $1";
+                let whereClause =
+                    "m.material_sub_group_id = $1 AND (m.approval_status IS NULL OR m.approval_status = 'approved')";
+                let countWhereClause =
+                    "m.material_sub_group_id = $1 AND (m.approval_status IS NULL OR m.approval_status = 'approved')";
                 let countParams = [subGroupId];
                 let materialParams = [subGroupId, pageSize, offset];
 
@@ -828,8 +830,9 @@ const Material = {
                     const countRes = await client.query(
                         `SELECT COUNT(*) AS total
                         FROM mat_sap_data m
-                        WHERE to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                        OR m.code ILIKE $2`,
+                        WHERE (approval_status IS NULL OR approval_status = 'approved')
+                        AND ((to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1))
+                        OR (m.code ILIKE $2))`,
                         [tsQuery, ilikePartial]
                     );
                     totalCount = parseInt(countRes.rows[0].total);
@@ -876,8 +879,9 @@ const Material = {
                         FROM mat_sap_data m
                         JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                        WHERE to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                        OR m.code ILIKE $2
+                        WHERE (approval_status IS NULL OR approval_status = 'approved')
+                        AND ((to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1))
+                        OR (m.code ILIKE $2))
                         ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
                         LIMIT $4 OFFSET $5`,
                         [tsQuery, ilikeExact, ilikePartial, pageSize, offset]
@@ -885,7 +889,7 @@ const Material = {
                     materialsQueryResult = result.rows;
                 } else {
                     const countRes = await client.query(
-                        `SELECT COUNT(*) AS total FROM mat_sap_data`
+                        `SELECT COUNT(*) AS total FROM mat_sap_data WHERE (approval_status IS NULL OR approval_status = 'approved')`
                     );
                     totalCount = parseInt(countRes.rows[0].total);
                     const result = await client.query(
@@ -919,6 +923,7 @@ const Material = {
                         FROM mat_sap_data m
                         JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                        WHERE (m.approval_status IS NULL OR m.approval_status = 'approved')
                         ORDER BY ${sorting_q}m.code ASC, m.name ASC
                         LIMIT $1 OFFSET $2`,
                         [pageSize, offset]
@@ -975,8 +980,9 @@ const Material = {
                         `SELECT COUNT(*) AS total
                         FROM mat_sap_data m
                         WHERE (dffromclient IS NULL OR dffromclient = false)
-                        AND (to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                        OR m.code ILIKE $2)`,
+                        AND (approval_status IS NULL OR approval_status = 'approved')
+                        AND ((to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1))
+                        OR (m.code ILIKE $2))`,
                         [tsQuery, ilikePartial]
                     );
                     totalCount = parseInt(countRes.rows[0].total);
@@ -1023,8 +1029,9 @@ const Material = {
                         JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
                         WHERE (dffromclient IS NULL OR dffromclient = false)
-                        AND (to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                        OR m.code ILIKE $2
+                        AND (approval_status IS NULL OR approval_status = 'approved')
+                        AND ((to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1))
+                        OR (m.code ILIKE $2))
                         ORDER BY code_match_rank, rank DESC, m.name ASC ${sorting_q}
                         LIMIT $4 OFFSET $5`,
                         [tsQuery, ilikeExact, ilikePartial, pageSize, offset]
@@ -1032,7 +1039,7 @@ const Material = {
                     materialsQueryResult = result.rows;
                 } else {
                     const countRes = await client.query(
-                        `SELECT COUNT(*) AS total FROM mat_sap_data WHERE dffromclient IS NULL OR dffromclient = false`
+                        `SELECT COUNT(*) AS total FROM mat_sap_data WHERE (dffromclient IS NULL OR dffromclient = false) AND (approval_status IS NULL OR approval_status = 'approved')`
                     );
                     totalCount = parseInt(countRes.rows[0].total);
                     const result = await client.query(
@@ -1066,7 +1073,7 @@ const Material = {
                         FROM mat_sap_data m
                         JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                        WHERE dffromclient IS NULL OR dffromclient = false
+                        WHERE (dffromclient IS NULL OR dffromclient = false) AND (approval_status IS NULL OR approval_status = 'approved')
                         ORDER BY m.code ASC, m.name ASC
                         LIMIT $1 OFFSET $2`,
                         [pageSize, offset]
@@ -2382,19 +2389,24 @@ const Material = {
                 try {
                     // 1. Validate material group and subgroup IDs from frontend
                     let materialSubGroupId = null;
-                    if (requestData.material_group && requestData.sub_material_group) {
+                    if (
+                        requestData.material_group &&
+                        requestData.sub_material_group
+                    ) {
                         const groupId = parseInt(requestData.material_group);
-                        const subGroupId = parseInt(requestData.sub_material_group);
-                        
+                        const subGroupId = parseInt(
+                            requestData.sub_material_group
+                        );
+
                         // Verify that the subgroup belongs to the selected group and both exist
                         const subGroupResult = await client.query(
-                            `SELECT mis.id FROM mat_item_sub_group mis 
-                             JOIN mat_item_group mig ON mis.item_group_id = mig.id 
-                             WHERE mis.id = $1 AND mig.id = $2 
+                            `SELECT mis.id FROM mat_item_sub_group mis
+                             JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                             WHERE mis.id = $1 AND mig.id = $2
                              AND mis.deleted_at IS NULL AND mig.deleted_at IS NULL`,
                             [subGroupId, groupId]
                         );
-                        
+
                         if (subGroupResult.rows.length > 0) {
                             materialSubGroupId = subGroupId;
                         }
@@ -2402,127 +2414,115 @@ const Material = {
 
                     // Require valid subgroup - throw error if not found
                     if (!materialSubGroupId) {
-                        throw new Error("Material group and sub-material group are required and must be valid. Please select valid material group and sub-material group from the available options.");
+                        throw new Error(
+                            "Material group and sub-material group are required and must be valid. Please select valid material group and sub-material group from the available options."
+                        );
                     }
 
                     // 2. Generate unique material code based on resolved subgroup
                     let newCode;
                     // Get group and subgroup codes
                     const groupSubgroupQuery = await client.query(
-                        `SELECT mig.code as group_code, mis.code as subgroup_code 
-                         FROM mat_item_sub_group mis 
-                         JOIN mat_item_group mig ON mis.item_group_id = mig.id 
+                        `SELECT mig.code as group_code, mis.code as subgroup_code
+                         FROM mat_item_sub_group mis
+                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
                          WHERE mis.id = $1`,
                         [materialSubGroupId]
                     );
 
                     if (groupSubgroupQuery.rows.length > 0) {
-                        const { group_code, subgroup_code } = groupSubgroupQuery.rows[0];
-                        
+                        const { group_code, subgroup_code } =
+                            groupSubgroupQuery.rows[0];
+
                         // Get the latest code for this subgroup pattern
                         const codePattern = `${group_code}.${subgroup_code}.%`;
                         const latestCodeQuery = await client.query(
-                            `SELECT code FROM mat_sap_data 
-                             WHERE code LIKE $1 
+                            `SELECT code FROM mat_sap_data
+                             WHERE code LIKE $1
                              ORDER BY code DESC LIMIT 1`,
                             [codePattern]
                         );
 
                         if (latestCodeQuery.rows.length > 0) {
                             const lastCode = latestCodeQuery.rows[0].code;
-                            const parts = lastCode.split('.');
+                            const parts = lastCode.split(".");
                             const lastSequence = parseInt(parts[2]) + 1;
-                            newCode = `${group_code}.${subgroup_code}.${String(lastSequence).padStart(3, '0')}`;
+                            newCode = `${group_code}.${subgroup_code}.${String(
+                                lastSequence
+                            ).padStart(3, "0")}`;
                         } else {
                             // First code for this subgroup
                             newCode = `${group_code}.${subgroup_code}.001`;
                         }
                     } else {
                         // This should never happen since we validate materialSubGroupId above
-                        throw new Error("Unable to retrieve group and subgroup codes. Please contact system administrator.");
+                        throw new Error(
+                            "Unable to retrieve group and subgroup codes. Please contact system administrator."
+                        );
                     }
 
                     // 3. Create comprehensive description (technical specs only)
                     const descriptionParts = [];
-                    if (requestData.part_number) descriptionParts.push(`P/N ${requestData.part_number}`);
+                    if (requestData.part_number)
+                        descriptionParts.push(`P/N ${requestData.part_number}`);
                     descriptionParts.push(requestData.deskripsi_material);
-                    if (requestData.type) descriptionParts.push(requestData.type);
-                    if (requestData.series) descriptionParts.push(requestData.series);
-                    if (requestData.dimensi) descriptionParts.push(requestData.dimensi);
-                    if (requestData.berat) descriptionParts.push(requestData.berat);
-                    if (requestData.bahan) descriptionParts.push(requestData.bahan);
-                    if (requestData.power) descriptionParts.push(requestData.power);
-                    if (requestData.plant) descriptionParts.push(requestData.plant);
-                    if (requestData.other_specification) descriptionParts.push(requestData.other_specification);
-                    if (requestData.catatan_tambahan) descriptionParts.push(requestData.catatan_tambahan);
-                    
-                    const description = descriptionParts.join(' ');
-                    const longText = ''; // Leave long_text empty
+                    if (requestData.type)
+                        descriptionParts.push(requestData.type);
+                    if (requestData.series)
+                        descriptionParts.push(requestData.series);
+                    if (requestData.dimensi)
+                        descriptionParts.push(requestData.dimensi);
+                    if (requestData.berat)
+                        descriptionParts.push(requestData.berat);
+                    if (requestData.bahan)
+                        descriptionParts.push(requestData.bahan);
+                    if (requestData.power)
+                        descriptionParts.push(requestData.power);
+                    if (requestData.plant)
+                        descriptionParts.push(requestData.plant);
+                    if (requestData.other_specification)
+                        descriptionParts.push(requestData.other_specification);
+                    if (requestData.catatan_tambahan)
+                        descriptionParts.push(requestData.catatan_tambahan);
 
-                    // 4. Insert into mat_sap_data
+                    const description = descriptionParts.join(" ");
+                    const longText = ""; // Leave long_text empty
+
+                    // 4. Insert into mat_sap_data with approval workflow
                     const matSapData = {
                         code: newCode,
                         name: requestData.nama_material,
                         description: description,
                         long_text: longText,
-                        type: 'SPAR',
+                        type: "SPAR",
                         unit_of_measurement: requestData.uom,
+                        alias1: requestData.alias1 || null,
+                        alias2: requestData.alias2 || null,
+                        alias3: requestData.alias3 || null,
                         material_sub_group_id: materialSubGroupId,
-                        created_by: userInfo.user_id,
+                        approval_status: "pending",
+                        requested_by: userInfo.user_id,
+                        requested_at: "NOW()",
+                        created_by: null, // Will be set when approved
                         updated_by: userInfo.user_id,
-                        created_at: 'NOW()',
-                        updated_at: 'NOW()',
-                        dffromclient: false
+                        created_at: "NOW()",
+                        updated_at: "NOW()",
+                        dffromclient: false,
                     };
 
                     const [matSapQuery, matSapValues] = Crud.insertItem(
-                        'mat_sap_data',
+                        "mat_sap_data",
                         matSapData,
-                        'id'
+                        "id"
                     );
 
-                    const matSapResult = await client.query(matSapQuery, matSapValues);
+                    const matSapResult = await client.query(
+                        matSapQuery,
+                        matSapValues
+                    );
                     const materialId = matSapResult.rows[0].id;
 
-                    // 5. Insert into mat_reqcreate
-                    const stagingData = {
-                        tanggal_permintaan: requestData.tanggal_permintaan,
-                        nama_pemohon: userInfo.nama_pemohon,
-                        departemen: userInfo.departemen,
-                        nama_material: requestData.nama_material,
-                        deskripsi_material: requestData.deskripsi_material,
-                        material_group: requestData.material_group,
-                        sub_material_group: requestData.sub_material_group,
-                        register_number: requestData.register_number,
-                        part_number: requestData.part_number,
-                        dimensi: requestData.dimensi,
-                        berat: requestData.berat,
-                        bahan: requestData.bahan,
-                        type: requestData.type,
-                        series: requestData.series,
-                        power: requestData.power,
-                        other_specification: requestData.other_specification,
-                        uom: requestData.uom,
-                        plant: requestData.plant,
-                        storage_location: requestData.storage_location,
-                        valuation_type: requestData.valuation_type,
-                        has_attachment: attachments && attachments.length > 0,
-                        catatan_tambahan: requestData.catatan_tambahan,
-                        status: 'processed',
-                        material_id: materialId,
-                        created_by: userInfo.user_id,
-                        created_at: 'NOW()'
-                    };
-
-                    const [stagingQuery, stagingValues] = Crud.insertItem(
-                        'mat_reqcreate',
-                        stagingData,
-                        'id'
-                    );
-
-                    const stagingResult = await client.query(stagingQuery, stagingValues);
-
-                    // 6. Handle attachments if provided
+                    // 5. Handle attachments if provided
                     const uploadedFiles = [];
                     if (attachments && attachments.length > 0) {
                         for (const file of attachments) {
@@ -2532,50 +2532,58 @@ const Material = {
                                 material_id: materialId,
                                 attachment: file.newName,
                                 type: mimeType,
-                                created_at: 'NOW()',
-                                updated_at: 'NOW()'
+                                created_at: "NOW()",
+                                updated_at: "NOW()",
                             };
 
                             const [attachQuery, attachValues] = Crud.insertItem(
-                                'mat_attachment',
+                                "mat_attachment",
                                 attachmentData,
-                                'id'
+                                "id"
                             );
 
-                            const attachResult = await client.query(attachQuery, attachValues);
+                            const attachResult = await client.query(
+                                attachQuery,
+                                attachValues
+                            );
 
                             uploadedFiles.push({
                                 id: attachResult.rows[0].id,
                                 originalName: file.originalName,
                                 savedAs: file.newName,
-                                type: mimeType
+                                type: mimeType,
                             });
                         }
                     }
 
                     await client.query("COMMIT");
 
-                    // 7. Save files to disk after successful database operations
+                    // 6. Save files to disk after successful database operations
                     if (attachments && attachments.length > 0) {
-                        const publicDir = path.join(path.resolve(), "./backend/public");
-                        
+                        const publicDir = path.join(
+                            path.resolve(),
+                            "./backend/public"
+                        );
+
                         for (const file of attachments) {
-                            const finalPath = path.join(publicDir, file.newName);
+                            const finalPath = path.join(
+                                publicDir,
+                                file.newName
+                            );
                             fs.copyFileSync(file.tempPath, finalPath);
                             fs.unlinkSync(file.tempPath); // Clean up temp file
                         }
                     }
 
                     return {
-                        stagingId: stagingResult.rows[0].id,
                         materialId: materialId,
                         materialCode: newCode,
-                        uploadedFiles: uploadedFiles
+                        uploadedFiles: uploadedFiles,
+                        status: "pending_approval",
                     };
-
                 } catch (error) {
                     await client.query("ROLLBACK");
-                    
+
                     // Clean up temp files on error
                     if (attachments && attachments.length > 0) {
                         for (const file of attachments) {
@@ -2584,7 +2592,7 @@ const Material = {
                             }
                         }
                     }
-                    
+
                     throw error;
                 }
             });
@@ -2594,105 +2602,377 @@ const Material = {
         }
     },
 
-    // Get all material requests from mat_reqcreate table
-    getMaterialRequests: async (page = 1, pageSize = 10, searchQuery = "", sort = "created_at", order = "desc") => {
+    // Get pending approval materials
+    getPendingMaterials: async (
+        page = 1,
+        pageSize = 10,
+        search = "",
+        sort = "requested_at",
+        order = "desc"
+    ) => {
         try {
             return await DBClientWrapper(async client => {
                 const offset = (page - 1) * pageSize;
-                let whereClause = "WHERE 1=1";
-                const params = [];
+                const safeSearchTerm = String(search || "").trim();
+                const isSearch = safeSearchTerm.length > 0;
+                let totalCount = 0;
+                let materialsQueryResult = [];
 
-                if (searchQuery.trim()) {
-                    params.push(`%${searchQuery}%`);
-                    whereClause += ` AND (
-                        nama_material ILIKE $${params.length} OR 
-                        nama_pemohon ILIKE $${params.length} OR 
-                        departemen ILIKE $${params.length} OR
-                        material_group ILIKE $${params.length}
-                    )`;
+                if (isSearch) {
+                    // Use the same search logic as searchMaterials with full-text search
+                    const toTsQuery = input =>
+                        input
+                            .trim()
+                            .split(/\s+/)
+                            .map(word => `${word}:*`)
+                            .join(" & ");
+                    const tsQuery = toTsQuery(safeSearchTerm);
+                    const ilikeExact = safeSearchTerm;
+                    const ilikePartial = `%${safeSearchTerm}%`;
+
+                    // Get total count for search
+                    const countRes = await client.query(
+                        `SELECT COUNT(*) AS total
+                        FROM mat_sap_data m
+                        JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                        JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                        JOIN mst_user u ON m.requested_by = u.user_id
+                        WHERE m.approval_status = 'pending'
+                        AND (
+                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                            OR m.code ILIKE $2
+                            OR m.code ILIKE $3
+                            OR u.fullname ILIKE $4
+                        )`,
+                        [tsQuery, ilikeExact, ilikePartial, ilikePartial]
+                    );
+                    totalCount = parseInt(countRes.rows[0].total);
+
+                    // Get search results with ranking
+                    const result = await client.query(
+                        `SELECT
+                            m.id,
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.unit_of_measurement,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            m.approval_status,
+                            m.requested_by,
+                            u.fullname as requested_by_name,
+                            m.requested_at,
+                            m.created_at,
+                            mis.name as sub_group_name,
+                            mig.name as group_name,
+                            ts_rank_cd(
+                                setweight(to_tsvector(COALESCE(m.name, '')), 'A') ||
+                                setweight(to_tsvector(COALESCE(m.description, '')), 'B') ||
+                                setweight(to_tsvector(COALESCE(m.alias1, '')), 'C') ||
+                                setweight(to_tsvector(COALESCE(m.alias2, '')), 'C') ||
+                                setweight(to_tsvector(COALESCE(m.alias3, '')), 'C'),
+                                to_tsquery('english', $1)
+                            ) AS rank,
+                            CASE
+                                WHEN m.code ILIKE $2 THEN 1
+                                WHEN m.code ILIKE $3 THEN 2
+                                ELSE 3
+                            END AS code_match_rank
+                        FROM mat_sap_data m
+                        JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                        JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                        JOIN mst_user u ON m.requested_by = u.user_id
+                        WHERE m.approval_status = 'pending'
+                        AND (
+                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                            OR m.code ILIKE $2
+                            OR m.code ILIKE $3
+                            OR u.fullname ILIKE $4
+                        )
+                        ORDER BY code_match_rank, rank DESC, m.${sort} ${order.toUpperCase()}
+                        LIMIT $5 OFFSET $6`,
+                        [
+                            tsQuery,
+                            ilikeExact,
+                            ilikePartial,
+                            ilikePartial,
+                            pageSize,
+                            offset,
+                        ]
+                    );
+                    materialsQueryResult = result.rows;
+                } else {
+                    // Get total count for all pending materials
+                    const countRes = await client.query(
+                        `SELECT COUNT(*) AS total
+                        FROM mat_sap_data m
+                        WHERE m.approval_status = 'pending'`
+                    );
+                    totalCount = parseInt(countRes.rows[0].total);
+
+                    // Get all pending materials without search
+                    const result = await client.query(
+                        `SELECT
+                            m.id,
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.unit_of_measurement,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            m.approval_status,
+                            m.requested_by,
+                            u.fullname as requested_by_name,
+                            m.requested_at,
+                            m.created_at,
+                            mis.name as sub_group_name,
+                            mig.name as group_name
+                        FROM mat_sap_data m
+                        JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                        JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                        JOIN mst_user u ON m.requested_by = u.user_id
+                        WHERE m.approval_status = 'pending'
+                        ORDER BY m.${sort} ${order.toUpperCase()}
+                        LIMIT $1 OFFSET $2`,
+                        [pageSize, offset]
+                    );
+                    materialsQueryResult = result.rows;
                 }
 
-                // Get total count
-                const countQuery = `SELECT COUNT(*) FROM mat_reqcreate ${whereClause}`;
-                const countResult = await client.query(countQuery, params);
-                const totalCount = parseInt(countResult.rows[0].count);
-
-                // Get paginated results
-                const dataQuery = `
-                    SELECT 
-                        id,
-                        tanggal_permintaan,
-                        nama_pemohon,
-                        departemen,
-                        nama_material,
-                        material_group,
-                        sub_material_group,
-                        uom,
-                        plant,
-                        storage_location,
-                        has_attachment,
-                        status,
-                        material_id,
-                        created_at
-                    FROM mat_reqcreate 
-                    ${whereClause}
-                    ORDER BY ${sort} ${order.toUpperCase()}
-                    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-                `;
-
-                params.push(pageSize, offset);
-                const dataResult = await client.query(dataQuery, params);
-
                 return {
-                    data: dataResult.rows,
+                    data: materialsQueryResult,
                     pagination: {
                         totalCount,
                         totalPages: Math.ceil(totalCount / pageSize),
                         currentPage: page,
-                        pageSize
-                    }
+                        pageSize,
+                    },
                 };
             });
         } catch (error) {
-            console.error("Error fetching material requests:", error);
+            console.error("Error fetching pending materials:", error);
             throw error;
         }
     },
 
-    // Get material request by ID
-    getMaterialRequestById: async (requestId) => {
+    // Get pending material by ID for approval
+    getPendingMaterialById: async materialId => {
         try {
             return await DBClientWrapper(async client => {
                 const result = await client.query(
-                    `SELECT 
-                        mrs.*,
-                        msd.code as material_code,
-                        msd.name as material_name
-                    FROM mat_reqcreate mrs
-                    LEFT JOIN mat_sap_data msd ON mrs.material_id = msd.id
-                    WHERE mrs.id = $1`,
-                    [requestId]
+                    `SELECT
+                        m.id,
+                        m.code,
+                        m.name,
+                        m.description,
+                        m.long_text,
+                        m.unit_of_measurement,
+                        m.alias1,
+                        m.alias2,
+                        m.alias3,
+                        m.filter_code_1,
+                        m.filter_code_2,
+                        m.material_sub_group_id,
+                        m.approval_status,
+                        m.requested_by,
+                        m.requested_at,
+                        m.created_at,
+                        m.updated_at,
+                        m.dfFromClient,
+                        m.created_by,
+                        m.updated_by,
+                        m.rejected_by,
+                        m.rejection_reason,
+                        mis.name as sub_group_name,
+                        mig.name as group_name,
+                        u.fullname as requested_by_name
+                    FROM mat_sap_data m
+                    JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                    JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                    JOIN mst_user u ON m.requested_by = u.user_id
+                    WHERE m.id = $1 AND m.approval_status = 'pending'`,
+                    [materialId]
                 );
 
                 if (result.rows.length === 0) {
                     return null;
                 }
 
-                const request = result.rows[0];
+                const material = result.rows[0];
 
-                // Get attachments if material was created
-                if (request.material_id) {
-                    const attachments = await Material.getMaterialAttachments(request.material_id);
-                    request.attachments = attachments;
-                }
+                // Get attachments
+                const attachments =
+                    await Material.getMaterialAttachments(materialId);
+                material.attachments = attachments;
 
-                return request;
+                return material;
             });
         } catch (error) {
-            console.error("Error fetching material request by ID:", error);
+            console.error("Error fetching pending material by ID:", error);
             throw error;
         }
-    }
+    },
+
+    // Approve material request
+    approveMaterial: async (materialId, approverUserId) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const result = await client.query(
+                        `UPDATE mat_sap_data
+                         SET approval_status = 'approved',
+                             created_by = $2,
+                             updated_at = NOW()
+                         WHERE id = $1 AND approval_status = 'pending'
+                         RETURNING *`,
+                        [materialId, approverUserId]
+                    );
+
+                    if (result.rows.length === 0) {
+                        throw new Error(
+                            "Material not found or not in pending status"
+                        );
+                    }
+
+                    await client.query("COMMIT");
+                    return result.rows[0];
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error approving material:", error);
+            throw error;
+        }
+    },
+
+    // Reject material request
+    rejectMaterial: async (materialId, rejectorUserId, rejectionReason) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const result = await client.query(
+                        `UPDATE mat_sap_data
+                         SET approval_status = 'rejected',
+                             rejected_by = $2,
+                             rejection_reason = $3,
+                             updated_at = NOW()
+                         WHERE id = $1 AND approval_status = 'pending'
+                         RETURNING *`,
+                        [materialId, rejectorUserId, rejectionReason]
+                    );
+
+                    if (result.rows.length === 0) {
+                        throw new Error(
+                            "Material not found or not in pending status"
+                        );
+                    }
+
+                    await client.query("COMMIT");
+                    return result.rows[0];
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error rejecting material:", error);
+            throw error;
+        }
+    },
+
+    // Update pending material request
+    updatePendingMaterial: async (materialId, updateData, userInfo) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    // Check if material is in pending status
+                    const checkResult = await client.query(
+                        `SELECT id FROM mat_sap_data WHERE id = $1 AND approval_status = 'pending'`,
+                        [materialId]
+                    );
+
+                    if (checkResult.rows.length === 0) {
+                        throw new Error(
+                            "Material not found or not in pending status"
+                        );
+                    }
+
+                    // Build update query dynamically
+                    const updateFields = [];
+                    const updateValues = [];
+                    let paramCount = 1;
+
+                    if (updateData.name) {
+                        updateFields.push(`name = $${paramCount++}`);
+                        updateValues.push(updateData.name);
+                    }
+                    if (updateData.description) {
+                        updateFields.push(`description = $${paramCount++}`);
+                        updateValues.push(updateData.description);
+                    }
+                    if (updateData.unit_of_measurement) {
+                        updateFields.push(
+                            `unit_of_measurement = $${paramCount++}`
+                        );
+                        updateValues.push(updateData.unit_of_measurement);
+                    }
+                    if (updateData.alias1 !== undefined) {
+                        updateFields.push(`alias1 = $${paramCount++}`);
+                        updateValues.push(updateData.alias1);
+                    }
+                    if (updateData.alias2 !== undefined) {
+                        updateFields.push(`alias2 = $${paramCount++}`);
+                        updateValues.push(updateData.alias2);
+                    }
+                    if (updateData.alias3 !== undefined) {
+                        updateFields.push(`alias3 = $${paramCount++}`);
+                        updateValues.push(updateData.alias3);
+                    }
+
+                    if (updateFields.length === 0) {
+                        throw new Error("No valid fields to update");
+                    }
+
+                    updateFields.push(`updated_by = $${paramCount++}`);
+                    updateFields.push(`updated_at = NOW()`);
+                    updateValues.push(userInfo.user_id);
+
+                    updateValues.push(materialId); // Add materialId as last parameter
+
+                    const updateQuery = `
+                        UPDATE mat_sap_data
+                        SET ${updateFields.join(", ")}
+                        WHERE id = $${paramCount}
+                        RETURNING *
+                    `;
+
+                    const result = await client.query(
+                        updateQuery,
+                        updateValues
+                    );
+
+                    await client.query("COMMIT");
+                    return result.rows[0];
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error updating pending material:", error);
+            throw error;
+        }
+    },
 };
 
 module.exports = Material;

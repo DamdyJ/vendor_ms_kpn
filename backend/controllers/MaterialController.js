@@ -1194,6 +1194,9 @@ const MaterialController = {
                 storage_location: getFieldValue("storage_location"),
                 valuation_type: getFieldValue("valuation_type"),
                 catatan_tambahan: getFieldValue("catatan_tambahan"),
+                alias1: getFieldValue("alias1"),
+                alias2: getFieldValue("alias2"),
+                alias3: getFieldValue("alias3"),
             };
 
             // Debug: Log the received data
@@ -1374,29 +1377,151 @@ const MaterialController = {
         }
     },
 
-    // Get material request by ID
-    getMaterialRequestById: async (req, res) => {
+    // Get pending materials for approval
+    getPendingMaterials: async (req, res) => {
         try {
-            const { requestId } = req.params;
-            const request = await Material.getMaterialRequestById(requestId);
+            const {
+                page = 1,
+                pageSize = 10,
+                search = "",
+                sort = "requested_at",
+                order = "desc",
+            } = req.query;
 
-            if (!request) {
-                res.status(404).json({
+            const result = await Material.getPendingMaterials(
+                parseInt(page),
+                parseInt(pageSize),
+                search,
+                sort,
+                order
+            );
+
+            res.status(200).json({
+                success: true,
+                data: result.data,
+                pagination: result.pagination,
+            });
+        } catch (error) {
+            console.error("Get pending materials error:", error);
+            res.status(500).json({
+                success: false,
+                message: "Failed to fetch pending materials",
+                error: error.message,
+            });
+        }
+    },
+
+    // Get pending material by ID for approval
+    getPendingMaterialById: async (req, res) => {
+        try {
+            const { materialId } = req.params;
+            const material = await Material.getPendingMaterialById(materialId);
+
+            if (!material) {
+                return res.status(404).json({
                     success: false,
-                    message: "Material request not found",
+                    message: "Pending material not found",
                 });
-                return;
             }
 
             res.status(200).json({
                 success: true,
-                data: request,
+                data: material,
             });
         } catch (error) {
-            console.error("Get material request by ID error:", error);
+            console.error("Get pending material by ID error:", error);
             res.status(500).json({
                 success: false,
-                message: "Failed to fetch material request",
+                message: "Failed to fetch pending material",
+                error: error.message,
+            });
+        }
+    },
+
+    // Approve material request
+    approveMaterial: async (req, res) => {
+        try {
+            const { materialId } = req.params;
+            const approverUserId = req.user?.user_id || "system";
+
+            const result = await Material.approveMaterial(
+                materialId,
+                approverUserId
+            );
+
+            res.status(200).json({
+                success: true,
+                message: "Material approved successfully",
+                data: result,
+            });
+        } catch (error) {
+            console.error("Approve material error:", error);
+            res.status(500).json({
+                success: false,
+                message: "Failed to approve material",
+                error: error.message,
+            });
+        }
+    },
+
+    // Reject material request
+    rejectMaterial: async (req, res) => {
+        try {
+            const { materialId } = req.params;
+            const { rejectionReason } = req.body;
+            const rejectorUserId = req.user?.user_id || "system";
+
+            if (!rejectionReason) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Rejection reason is required",
+                });
+            }
+
+            const result = await Material.rejectMaterial(
+                materialId,
+                rejectorUserId,
+                rejectionReason
+            );
+
+            res.status(200).json({
+                success: true,
+                message: "Material rejected successfully",
+                data: result,
+            });
+        } catch (error) {
+            console.error("Reject material error:", error);
+            res.status(500).json({
+                success: false,
+                message: "Failed to reject material",
+                error: error.message,
+            });
+        }
+    },
+
+    // Update pending material request
+    updatePendingMaterial: async (req, res) => {
+        try {
+            const { materialId } = req.params;
+            const updateData = req.body;
+            const userInfo = { user_id: req.user?.user_id || "system" };
+
+            const result = await Material.updatePendingMaterial(
+                materialId,
+                updateData,
+                userInfo
+            );
+
+            res.status(200).json({
+                success: true,
+                message: "Pending material updated successfully",
+                data: result,
+            });
+        } catch (error) {
+            console.error("Update pending material error:", error);
+            res.status(500).json({
+                success: false,
+                message: "Failed to update pending material",
                 error: error.message,
             });
         }

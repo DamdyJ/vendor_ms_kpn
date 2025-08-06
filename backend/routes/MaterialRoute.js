@@ -9,9 +9,38 @@ router.get("/groups", MaterialController.getMaterialGroups);
 router.get("/groups/dropdown", MaterialController.getAllMaterialGroups);
 
 // Material request endpoints
-router.post("/request", AuthToken.authSession, MaterialController.submitMaterialRequest);
-router.get("/requests", MaterialController.getMaterialRequests);
-router.get("/requests/:requestId", MaterialController.getMaterialRequestById);
+router.post(
+    "/request",
+    AuthToken.authSession,
+    MaterialController.submitMaterialRequest
+);
+
+// Material approval workflow endpoints
+router.get(
+    "/pending",
+    AuthToken.authSession,
+    MaterialController.getPendingMaterials
+);
+router.get(
+    "/pending/:materialId",
+    AuthToken.authSession,
+    MaterialController.getPendingMaterialById
+);
+router.post(
+    "/approve/:materialId",
+    AuthToken.authSession,
+    MaterialController.approveMaterial
+);
+router.post(
+    "/reject/:materialId",
+    AuthToken.authSession,
+    MaterialController.rejectMaterial
+);
+router.put(
+    "/pending/:materialId",
+    AuthToken.authSession,
+    MaterialController.updatePendingMaterial
+);
 
 // Get attachments for materials by array of codes
 router.post("/by-codes", MaterialController.getAttachmentsByCodes);
