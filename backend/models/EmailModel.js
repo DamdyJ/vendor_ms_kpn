@@ -1108,6 +1108,59 @@ const Emailer = {
             throw error;
         }
     },
+
+    materialApprovalNotification: async (material, requesterEmail) => {
+        try {
+            const html = MaterialEmail.materialApprovalNotification(material);
+
+            const setup = {
+                from: process.env.SMTP_USERNAME,
+                to: "benpardede3@gmail.com", // for testing purposes
+                // to: requesterEmail,
+                subject: `Material Request Approved - ${material.code}`,
+                html: html,
+            };
+
+            const result = await tp.sendMail(setup);
+            return result;
+        } catch (error) {
+            console.error(
+                "Error sending material approval notification:",
+                error
+            );
+            throw error;
+        }
+    },
+
+    materialRejectionNotification: async (
+        material,
+        rejectionReason,
+        requesterEmail
+    ) => {
+        try {
+            const html = MaterialEmail.materialRejectionNotification(
+                material,
+                rejectionReason
+            );
+
+            const setup = {
+                from: process.env.SMTP_USERNAME,
+                to: "benpardede3@gmail.com", // for testing purposes
+                // to: requesterEmail,
+                subject: `Material Request Rejected - ${material.code}`,
+                html: html,
+            };
+
+            const result = await tp.sendMail(setup);
+            return result;
+        } catch (error) {
+            console.error(
+                "Error sending material rejection notification:",
+                error
+            );
+            throw error;
+        }
+    },
 };
 
 module.exports = Emailer;

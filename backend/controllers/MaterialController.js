@@ -1444,7 +1444,7 @@ const MaterialController = {
             const { materialId } = req.params;
             const approverUserId = req.user?.user_id || "system";
 
-            const result = await Material.approveMaterial(
+            const result = await Material.approveWithNotification(
                 materialId,
                 approverUserId
             );
@@ -1456,9 +1456,20 @@ const MaterialController = {
             });
         } catch (error) {
             console.error("Approve material error:", error);
-            res.status(500).json({
+            let statusCode = 500;
+            let message = "Failed to approve material";
+
+            if (error.message === "Material not found or not pending approval") {
+                statusCode = 404;
+                message = error.message;
+            } else if (error.message === "Material approval failed - material may have been already processed") {
+                statusCode = 409;
+                message = error.message;
+            }
+
+            res.status(statusCode).json({
                 success: false,
-                message: "Failed to approve material",
+                message,
                 error: error.message,
             });
         }
@@ -1478,7 +1489,7 @@ const MaterialController = {
                 });
             }
 
-            const result = await Material.rejectMaterial(
+            const result = await Material.rejectWithNotification(
                 materialId,
                 rejectorUserId,
                 rejectionReason
@@ -1491,9 +1502,20 @@ const MaterialController = {
             });
         } catch (error) {
             console.error("Reject material error:", error);
-            res.status(500).json({
+            let statusCode = 500;
+            let message = "Failed to reject material";
+
+            if (error.message === "Material not found or not pending approval") {
+                statusCode = 404;
+                message = error.message;
+            } else if (error.message === "Material rejection failed - material may have been already processed") {
+                statusCode = 409;
+                message = error.message;
+            }
+
+            res.status(statusCode).json({
                 success: false,
-                message: "Failed to reject material",
+                message,
                 error: error.message,
             });
         }

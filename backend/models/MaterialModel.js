@@ -10,6 +10,7 @@ const axios = require("axios");
 const pool = require("../config/connection");
 const saveToDatabase = require("../helper/sap_seeding");
 const getCodeSortClause = require("../helper/sort.js");
+const Emailer = require("./EmailModel");
 
 const Material = {
     // Create a new material group
@@ -2446,9 +2447,56 @@ const Material = {
                         if (latestCodeQuery.rows.length > 0) {
                             const lastCode = latestCodeQuery.rows[0].code;
                             const parts = lastCode.split(".");
-                            const lastSequence = parseInt(parts[2]) + 1;
+
+                            // Guard against non-numeric sequences (like B99, C01, etc.)
+                            const lastSequencePart = parts[2];
+                            let nextSequence = 1; // Default to 1 if parsing fails
+
+                            // Try to extract numeric part from the sequence
+                            const numericMatch =
+                                lastSequencePart.match(/(\d+)/);
+                            if (numericMatch) {
+                                const numericPart = parseInt(numericMatch[1]);
+                                if (!isNaN(numericPart)) {
+                                    nextSequence = numericPart + 1;
+                                }
+                            }
+
+                            // If the sequence contains non-numeric characters or parsing fails,
+                            // find the next available numeric sequence starting from 001
+                            if (isNaN(nextSequence) || nextSequence <= 0) {
+                                console.warn(
+                                    `Non-numeric or invalid sequence found in material code: ${lastCode}. Starting from 001.`
+                                );
+                                nextSequence = 1;
+
+                                // Double-check that 001 is available by querying existing codes
+                                let foundAvailable = false;
+                                for (let i = 1; i <= 999; i++) {
+                                    const testCode = `${group_code}.${subgroup_code}.${String(
+                                        i
+                                    ).padStart(3, "0")}`;
+                                    const existsQuery = await client.query(
+                                        `SELECT 1 FROM mat_sap_data WHERE code = $1 LIMIT 1`,
+                                        [testCode]
+                                    );
+
+                                    if (existsQuery.rows.length === 0) {
+                                        nextSequence = i;
+                                        foundAvailable = true;
+                                        break;
+                                    }
+                                }
+
+                                if (!foundAvailable) {
+                                    throw new Error(
+                                        `Unable to generate new material code for group ${group_code}.${subgroup_code}. All numeric sequences (001-999) appear to be used.`
+                                    );
+                                }
+                            }
+
                             newCode = `${group_code}.${subgroup_code}.${String(
-                                lastSequence
+                                nextSequence
                             ).padStart(3, "0")}`;
                         } else {
                             // First code for this subgroup
@@ -2815,79 +2863,6 @@ const Material = {
         }
     },
 
-    // Approve material request
-    approveMaterial: async (materialId, approverUserId) => {
-        try {
-            return await DBClientWrapper(async client => {
-                await client.query("BEGIN");
-
-                try {
-                    const result = await client.query(
-                        `UPDATE mat_sap_data
-                         SET approval_status = 'approved',
-                             created_by = $2,
-                             updated_at = NOW()
-                         WHERE id = $1 AND approval_status = 'pending'
-                         RETURNING *`,
-                        [materialId, approverUserId]
-                    );
-
-                    if (result.rows.length === 0) {
-                        throw new Error(
-                            "Material not found or not in pending status"
-                        );
-                    }
-
-                    await client.query("COMMIT");
-                    return result.rows[0];
-                } catch (error) {
-                    await client.query("ROLLBACK");
-                    throw error;
-                }
-            });
-        } catch (error) {
-            console.error("Error approving material:", error);
-            throw error;
-        }
-    },
-
-    // Reject material request
-    rejectMaterial: async (materialId, rejectorUserId, rejectionReason) => {
-        try {
-            return await DBClientWrapper(async client => {
-                await client.query("BEGIN");
-
-                try {
-                    const result = await client.query(
-                        `UPDATE mat_sap_data
-                         SET approval_status = 'rejected',
-                             rejected_by = $2,
-                             rejection_reason = $3,
-                             updated_at = NOW()
-                         WHERE id = $1 AND approval_status = 'pending'
-                         RETURNING *`,
-                        [materialId, rejectorUserId, rejectionReason]
-                    );
-
-                    if (result.rows.length === 0) {
-                        throw new Error(
-                            "Material not found or not in pending status"
-                        );
-                    }
-
-                    await client.query("COMMIT");
-                    return result.rows[0];
-                } catch (error) {
-                    await client.query("ROLLBACK");
-                    throw error;
-                }
-            });
-        } catch (error) {
-            console.error("Error rejecting material:", error);
-            throw error;
-        }
-    },
-
     // Update pending material request
     updatePendingMaterial: async (materialId, updateData, userInfo) => {
         try {
@@ -2970,6 +2945,194 @@ const Material = {
             });
         } catch (error) {
             console.error("Error updating pending material:", error);
+            throw error;
+        }
+    },
+
+    // Approve material with email notification
+    approveWithNotification: async (materialId, approverUserId) => {
+        try {
+            return await DBClientWrapper(async client => {
+                // Get material details with requester information before approval
+                const materialDetails = await client.query(
+                    `
+                    SELECT m.*, u.email as requester_email, u.fullname as requester_name,
+                           mig.name as group_name, mis.name as sub_group_name
+                    FROM mat_sap_data m
+                    LEFT JOIN mst_user u ON m.requested_by = u.user_id
+                    LEFT JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                    LEFT JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                    WHERE m.id = $1 AND m.approval_status = 'pending'
+                `,
+                    [materialId]
+                );
+
+                if (materialDetails.rows.length === 0) {
+                    throw new Error(
+                        "Material not found or not pending approval"
+                    );
+                }
+
+                const material = materialDetails.rows[0];
+
+                // Approve the material
+                const result = await client.query(
+                    `UPDATE mat_sap_data
+                     SET approval_status = 'approved',
+                         created_by = $2,
+                         updated_at = NOW()
+                     WHERE id = $1 AND approval_status = 'pending'
+                     RETURNING *`,
+                    [materialId, approverUserId]
+                );
+
+                if (result.rows.length === 0) {
+                    throw new Error(
+                        "Material approval failed - material may have been already processed"
+                    );
+                }
+
+                // Send email notification to requester if email exists
+                if (material.requester_email) {
+                    try {
+                        await Emailer.materialApprovalNotification(
+                            material,
+                            material.requester_email
+                        );
+                        console.log(`Approval email sent successfully`);
+                    } catch (emailError) {
+                        console.error(
+                            "Error sending approval email:",
+                            emailError
+                        );
+                        // Don't fail the transaction if email fails
+                    }
+                }
+
+                return result.rows[0];
+            });
+        } catch (error) {
+            console.error("Error approving material with notification:", error);
+            throw error;
+        }
+    },
+
+    // Reject material with email notification
+    rejectWithNotification: async (
+        materialId,
+        rejectorUserId,
+        rejectionReason
+    ) => {
+        try {
+            return await DBClientWrapper(async client => {
+                // Get material details with requester information before rejection
+                const materialDetails = await client.query(
+                    `
+                    SELECT m.*, u.email as requester_email, u.fullname as requester_name,
+                           mig.name as group_name, mis.name as sub_group_name
+                    FROM mat_sap_data m
+                    LEFT JOIN mst_user u ON m.requested_by = u.user_id
+                    LEFT JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                    LEFT JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                    WHERE m.id = $1 AND m.approval_status = 'pending'
+                `,
+                    [materialId]
+                );
+
+                if (materialDetails.rows.length === 0) {
+                    throw new Error(
+                        "Material not found or not pending approval"
+                    );
+                }
+
+                const material = materialDetails.rows[0];
+
+                // Get all attachments before deletion to clean up files
+                const attachmentsQuery = await client.query(
+                    `SELECT id, attachment FROM mat_attachment WHERE material_id = $1`,
+                    [materialId]
+                );
+
+                const attachments = attachmentsQuery.rows;
+
+                // Delete all attachments from database first (foreign key constraint)
+                if (attachments.length > 0) {
+                    await client.query(
+                        `DELETE FROM mat_attachment WHERE material_id = $1`,
+                        [materialId]
+                    );
+                }
+
+                // Delete the material (rejection = deletion for simplicity)
+                const result = await client.query(
+                    `DELETE FROM mat_sap_data
+                     WHERE id = $1 AND approval_status = 'pending'
+                     RETURNING *`,
+                    [materialId]
+                );
+
+                if (result.rows.length === 0) {
+                    throw new Error(
+                        "Material rejection failed - material may have been already processed"
+                    );
+                }
+
+                // Clean up attachment files from file system (after successful DB operations)
+                if (attachments.length > 0) {
+                    const publicDir = path.join(
+                        path.resolve(),
+                        "./backend/public"
+                    );
+
+                    for (const attachment of attachments) {
+                        try {
+                            const filePath = path.join(
+                                publicDir,
+                                attachment.attachment
+                            );
+
+                            if (fs.existsSync(filePath)) {
+                                fs.unlinkSync(filePath);
+                                console.log(
+                                    `Deleted attachment file: ${attachment.attachment}`
+                                );
+                            }
+                        } catch (fileError) {
+                            console.error(
+                                `Error deleting attachment file ${attachment.attachment}:`,
+                                fileError
+                            );
+                            // Don't fail the transaction if file deletion fails
+                        }
+                    }
+
+                    console.log(
+                        `Cleaned up ${attachments.length} attachment(s) for rejected material ID: ${materialId}`
+                    );
+                }
+
+                // Send email notification to requester if email exists
+                if (material.requester_email) {
+                    try {
+                        await Emailer.materialRejectionNotification(
+                            material,
+                            rejectionReason,
+                            material.requester_email
+                        );
+                        console.log(`Rejection email sent successfully`);
+                    } catch (emailError) {
+                        console.error(
+                            "Error sending rejection email:",
+                            emailError
+                        );
+                        // Don't fail the transaction if email fails
+                    }
+                }
+
+                return result.rows[0];
+            });
+        } catch (error) {
+            console.error("Error rejecting material with notification:", error);
             throw error;
         }
     },
