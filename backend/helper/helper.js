@@ -374,28 +374,5 @@ style="
     `;
 }
 
-//csv parser
-async function csvParser(filename) {
-    return new Promise((resolve, reject) => {
-        try {
-            let result = [];
-            fs.createReadStream(
-                path.resolve(__dirname, "../public/sftp_file", filename)
-            )
-                .pipe(csv_parser())
-                .on("data", data => {
-                    result.push(data);
-                })
-                .on("end", () => {
-                    resolve(result);
-                })
-                .on("error", error => {
-                    reject(error);
-                });
-        } catch (error) {
-            reject(error);
-        }
-    });
-}
 
-module.exports = { generate4Digit, emailTemplate, csvParser };
+module.exports = { generate4Digit, emailTemplate };
