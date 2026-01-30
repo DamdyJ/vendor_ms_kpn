@@ -61,7 +61,7 @@ class CoupaService {
         if (!token) token = await CoupaSession.login();
 
         const params = {
-            id: id,
+            supplier_id: id,
         };
 
         try {
@@ -93,6 +93,32 @@ class CoupaService {
             }
             throw error;
         }
+    }
+    static async updateData(id) {
+        if (!id) {
+            throw new Error("id is required");
+        }
+
+        let token = CoupaSession.getToken();
+        if (!token) token = await CoupaSession.login();
+
+        const response = await axios.put(
+            `${config.BASE_URL}/api/supplier_information/${id}`,
+            {
+                id: id,
+                "custom-fields": {
+                    "send-to-vms": true,
+                },
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "application/json",
+                },
+            }
+        );
+
+        return response.status;
     }
 }
 
