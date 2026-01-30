@@ -8,7 +8,6 @@ const os = require("os");
 const TRANS = require("../config/transaction");
 const uuid = require("uuidv4");
 const Crud = require("../helper/crudquery");
-const SFTPModel = require("../models/SFTPModel");
 
 VendorController = {};
 
@@ -598,19 +597,4 @@ VendorController.EditExpiryDateFile = async (req, res) => {
     }
 };
 
-//Get SFTP
-VendorController.GetDataSFTP = async (req, res) => {
-    try {
-        const { location, filename } = req.body;
-        const GetSFTP = await SFTPModel.GetSFTPFiles(location, filename);
-        res.status(200).send({
-            result: GetSFTP,
-        });
-    } catch (error) {
-        console.error(error);
-        res.status(500).send({
-            error: error,
-        });
-    }
-};
 module.exports = VendorController;
