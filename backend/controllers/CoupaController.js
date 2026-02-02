@@ -118,8 +118,8 @@ exports.getDetail = async (req, res) => {
 
             return {
                 company: {
-                    title: item["title-perusahaan"],
-                    local_ovs: item["local-foreign"],
+                    title: item["custom-fields"]["title-perusahaan"],
+                    local_ovs: item["custom-fields"]["local-foreign"],
                     country: address?.["country"].name,
                     name_1: item.name,
                     name_2: item["display-name"],
@@ -159,6 +159,7 @@ exports.getDetail = async (req, res) => {
                             .filter(Boolean)
                             .join(" ") || null,
                     email_finance: item["custom-fields"]?.["email-finance"],
+                    email_pic : item["supplier-information-contacts"][0]["email"],
                 },
                 company_address: {
                     ...streetLines,
@@ -179,22 +180,24 @@ exports.getDetail = async (req, res) => {
                     is_pkp: insurance?.statuspkp,
                     is_new_npwp: true,
                     npwp: item["custom-fields"]?.["npwp-16digits"],
-                    pay_mthd: item["bank-method-payment"],
+                    pay_mthd: item["custom-fields"]["bank-method-payment"],
                     pay_term: item["payment-term"]?.description || null,
-                    ppn_type: item["ppn-type"]?.["external-ref-num"],
+                    pay_term_code: item["payment-term"]?.code || null,
+                    ppn_type: item["custom-fields"]["ppn-type"]?.["external-ref-num"],
                     nitku: enterprise?.nitku,
                 },
                 vendor_detail: {
-                    company: company?.name,
-                    purch_org: purchOrg?.name,
-                    ven_group: "3RD PARTY",
-                    ven_acc: "Non-Trade",
+                    company: company?.description,
+                    company_code: company?.["external-ref-num"],
+                    purch_org: purchOrg?.["external-ref-code"],
+                    ven_group: "3RD_PARTY",
+                    ven_acc: "NON_TRADE",
                     ven_type: item["custom-fields"]?.["vendor-category"],
                     lim_curr: "-",
                     limit_vendor: "-",
-                    is_tender: item["vendor-peserta-tender"],
-                    is_priority: item["vendor-prioritas"],
-                    is_interest: item["prioritas-pembayaran-interest"],
+                    is_tender: item["custom-fields"]["vendor-peserta-tender"],
+                    is_priority: item["custom-fields"]["vendor-prioritas"],
+                    is_interest: item["custom-fields"]["prioritas-pembayaran-interest"],
                     description: enterprise?.descriptive,
                 },
                 bank_information: {
