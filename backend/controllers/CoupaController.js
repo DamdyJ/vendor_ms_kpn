@@ -1,3 +1,4 @@
+const { raw } = require("express");
 const CoupaService = require("../class/CoupaService");
 
 exports.getData = async (req, res) => {
@@ -83,6 +84,9 @@ exports.getDetail = async (req, res) => {
             const bankRegion =
                 item["custom-fields"]?.["negara-bank--bank-region"];
 
+            const payTerm = item["payment-term"];
+            const ppnData = item["custom-fields"]?.["ppn-type"];
+
             const fullAddress = [
                 address["street-address"],
                 address["street-address2"],
@@ -118,11 +122,12 @@ exports.getDetail = async (req, res) => {
 
             return {
                 company: {
-                    title: item["custom-fields"]["title-perusahaan"],
-                    local_ovs: item["custom-fields"]["local-foreign"],
-                    country: address?.["country"].name,
-                    name_1: item.name,
-                    name_2: item["display-name"],
+                    title: item["custom-fields"]?.["title-perusahaan"] || null,
+                    local_ovs: item["custom-fields"]?.["local-foreign"] || null,
+                    country: address?.["country"]?.name || null,
+                    country_code: address?.["country"]?.code || null,
+                    name_1: item.name || null,
+                    name_2: item["display-name"] || null,
                     phone:
                         [
                             contact?.["phone-work"]?.extension,
@@ -138,74 +143,86 @@ exports.getDetail = async (req, res) => {
                         ]
                             .filter(Boolean)
                             .join(" ") || null,
-                    email: contact?.["email"],
+                    email: contact?.["email"] || null,
                     kawasan_berikat: insurance?.["kawasan-berikat"],
-                    coupa_id: item["supplier-id"],
+                    coupa_id: item["supplier-id"] || null,
                 },
                 social_media: {
-                    website_url: item.website,
+                    website_url: item.website || null,
                 },
                 company_organization: {
-                    nama_direktur: item["custom-fields"]?.["nama-direktur"],
+                    nama_direktur:
+                        item["custom-fields"]?.["nama-direktur"] || null,
                     nama_pic:
                         [contact?.["name-given"], contact?.["name-family"]]
                             .filter(Boolean)
                             .join(" ") || null,
                     no_telf_pic:
                         [
-                            contact?.["phone-mobile"]?.extension,
-                            contact?.["phone-mobile"]?.number,
+                            contact?.["phone-mobile"]?.extension || null,
+                            contact?.["phone-mobile"]?.number || null,
                         ]
                             .filter(Boolean)
                             .join(" ") || null,
-                    email_finance: item["custom-fields"]?.["email-finance"],
-                    email_pic : item["supplier-information-contacts"][0]["email"],
+                    email_finance:
+                        item["custom-fields"]?.["email-finance"] || null,
                 },
                 company_address: {
                     ...streetLines,
                     city: address?.city || null,
-                    postal: address?.["postarl-code"] || null,
+                    postal: address?.["postal-code"] || null,
                 },
                 npwp_address: {
                     ...npwpLines,
-                    city_npwp: insurance?.["npwp-city"]?.name,
-                    postal_npwp: insurance?.["npwp-postal-code"],
+                    city_npwp: insurance?.["npwp-city"]?.name || null,
+                    postal_npwp: insurance?.["npwp-postal-code"] || null,
                 },
                 sppkp_address: {
                     ...skkpLines,
-                    city_sppkp: enterprise?.["sppkp-city"].name,
-                    postal_sppkp: enterprise?.["sppkp-postal-code"],
+                    city_sppkp: enterprise?.["sppkp-city"]?.name || null,
+                    postal_sppkp: enterprise?.["sppkp-postal-code"] || null,
                 },
                 tax_payment: {
-                    is_pkp: insurance?.statuspkp,
+                    is_pkp: insurance?.statuspkp || null,
                     is_new_npwp: true,
-                    npwp: item["custom-fields"]?.["npwp-16digits"],
-                    pay_mthd: item["custom-fields"]["bank-method-payment"],
-                    pay_term: item["payment-term"]?.description || null,
-                    pay_term_code: item["payment-term"]?.code || null,
-                    ppn_type: item["custom-fields"]["ppn-type"]?.["external-ref-num"],
-                    nitku: enterprise?.nitku,
+                    npwp: item["custom-fields"]?.["npwp-16digits"] || null,
+                    pay_mthd:
+                        item["custom-fields"]?.["bank-method-payment"] || null,
+                    pay_term: payTerm?.description || null,
+                    pay_term_code: payTerm?.code || null,
+                    pay_term_type: payTerm?.type || null,
+                    ppn_description: ppnData?.description || null,
+                    ppn_code: ppnData?.["external-ref-code"] || null,
+                    nitku: enterprise?.nitku || null,
                 },
                 vendor_detail: {
-                    company: company?.description,
-                    company_code: company?.["external-ref-num"],
-                    purch_org: purchOrg?.["external-ref-code"],
+                    company: company?.name || null,
+                    company_code: company?.["external-ref-code"] || null,
+                    purch_org: purchOrg?.name || null,
+                    purch_org_code: purchOrg?.["external-ref-num"] || null,
                     ven_group: "3RD_PARTY",
                     ven_acc: "NON_TRADE",
-                    ven_type: item["custom-fields"]?.["vendor-category"],
-                    lim_curr: "-",
-                    limit_vendor: "-",
-                    is_tender: item["custom-fields"]["vendor-peserta-tender"],
-                    is_priority: item["custom-fields"]["vendor-prioritas"],
-                    is_interest: item["custom-fields"]["prioritas-pembayaran-interest"],
-                    description: enterprise?.descriptive,
+                    ven_type:
+                        item["custom-fields"]?.["vendor-category"] || null,
+                    lim_curr: "",
+                    limit_vendor: "",
+                    is_tender: item["custom-fields"]?.["vendor-peserta-tender"],
+                    is_priority: item["custom-fields"]?.["vendor-prioritas"],
+                    is_interest:
+                        item["custom-fields"]?.[
+                            "prioritas-pembayaran-interest"
+                        ],
+                    ven_description: enterprise?.descriptive || null,
                 },
                 bank_information: {
-                    bank_country: bankRegion?.["external-ref-num"],
-                    bank_id: bankData?.id,
-                    bank_curr: item["preferred-currency"]?.code,
-                    bank_acc: item["custom-fields"]?.["bank-account-number"],
-                    acc_hold: item["custom-fields"]?.["account-holder-name"],
+                    bank_id: bankData?.["external-ref-num"] || null,
+                    bank_name: bankData?.name || null,
+                    bank_country: bankRegion?.["external-ref-num"] || null,
+                    bank_curr: item["preferred-currency"]?.code || null,
+                    bank_acc:
+                        item["custom- || nullfields"]?.["bank-account-number"],
+                    acc_hold:
+                        item["custom-fields"]?.["account-holder-name"] || null,
                 },
                 vendor_code: item["supplier-number"],
             };
@@ -213,6 +230,7 @@ exports.getDetail = async (req, res) => {
 
         res.json({
             success: true,
+            // rawData,
             data: filteredData[0],
         });
     } catch (error) {
