@@ -33,7 +33,7 @@ exports.getData = async (req, res) => {
     }
 };
 
-function splitData(data, maxLength = 40, title) {
+function splitData(data, maxLength = 35, title) {
     if (!data) return {};
 
     // pecah menjadi array tiap 40 karakter (rapi kata)
@@ -116,9 +116,9 @@ exports.getDetail = async (req, res) => {
                     .filter(Boolean)
                     .join(" ") || null;
 
-            const streetLines = splitData(fullAddress, 40, "street");
-            const npwpLines = splitData(npwpAddress, 40, "npwp_street");
-            const skkpLines = splitData(skkpAddress, 40, "sppkp_street");
+            const streetLines = splitData(fullAddress, 35, "street");
+            const npwpLines = splitData(npwpAddress, 35, "npwp_street");
+            const skkpLines = splitData(skkpAddress, 35, "sppkp_street");
 
             return {
                 company: {
@@ -166,6 +166,7 @@ exports.getDetail = async (req, res) => {
                             .join(" ") || null,
                     email_finance:
                         item["custom-fields"]?.["email-finance"] || null,
+                    email_pic: contact.email || null,
                 },
                 company_address: {
                     ...streetLines,
@@ -215,14 +216,12 @@ exports.getDetail = async (req, res) => {
                     ven_description: enterprise?.descriptive || null,
                 },
                 bank_information: {
-                    bank_id: bankData?.["external-ref-num"] || null,
-                    bank_name: bankData?.name || null,
-                    bank_country: bankRegion?.["external-ref-num"] || null,
-                    bank_curr: item["preferred-currency"]?.code || null,
-                    bank_acc:
-                        item["custom- || nullfields"]?.["bank-account-number"],
-                    acc_hold:
-                        item["custom-fields"]?.["account-holder-name"] || null,
+                    bank_country: bankRegion?.["external-ref-num"],
+                    bank_id: bankData?.id,
+                    bank_name: bankData.name,
+                    bank_curr: item["preferred-currency"]?.code,
+                    bank_acc: item["custom-fields"]?.["bank-account-number"],
+                    acc_hold: item["custom-fields"]?.["account-holder-name"],
                 },
                 vendor_code: item["supplier-number"],
             };
