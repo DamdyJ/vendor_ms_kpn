@@ -147,6 +147,39 @@ const Vendor = {
         }
     },
 
+    async setDetailVenCoupa(detail, client) {
+        try {
+            const isExist = await client.query(
+                `SELECT * FROM VENDOR WHERE ven_id = $1`,
+                [detail.ven_id]
+            );
+            const today = new Date();
+            if ("valid_until" in detail) {
+                const valid_until = new Date(
+                    detail.valid_until
+                ).toLocaleDateString();
+                detail.valid_until = valid_until ? valid_until : null;
+            }
+            detail.updated_at = moment(today).format("YYYY-MM-DD");
+            detail.created_at = moment(today).format("YYYY-MM-DD");
+            if (isExist.rowCount != 0) {
+                [q, value] = crud.updateItem(
+                    "VENDOR",
+                    detail,
+                    { ven_id: detail.ven_id },
+                    "*"
+                );
+            } else {
+                [q, value] = crud.insertItem("VENDOR", detail, "*");
+                // return;
+            }
+            return client;
+        } catch (err) {
+            console.log(err);
+            throw err;
+        }
+    },
+
     async setTemp(params) {
         const { fields, uploaded_files } = params;
         let promises = [];
