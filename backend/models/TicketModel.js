@@ -1154,6 +1154,56 @@ const Ticket = {
         }
     },
 
+    async submitVendorCoupa({
+        coupa_id,
+        session,
+        ven_detail,
+        ven_banks,
+    }) {
+        try {
+            const client = await db.connect();
+            let result;
+            try {
+                await client.query(TRANS.BEGIN);
+                let sess = session;
+                if (Object.keys(session).length < 1) {
+                    sess = {
+                        user_id: "",
+                        emp_role_id: "VENDOR",
+                        bu_id: "",
+                        dept_id: "",
+                    };
+                    1;
+                }
+                ven_detail.ven_id = ven_detail.ven_id != "" ? ven_detail.ven_id : uuid.uuid();
+
+                //set detail vendor
+                await Vendor.setDetailVenCoupa(ven_detail, client);
+
+                //set bank vendor
+                await Vendor.setBankRfctr(ven_banks, client, ven_detail.ven_id);
+
+                result = {
+                        message: `Vendor ${ven_detail.coupa_id} is saved`,
+                        data: {
+                            ven_id: ven_detail.ven_id,
+                            name_1: ven_detail.name_1,
+                            title: ven_detail.title,
+                        },
+                    };
+                await client.query(TRANS.COMMIT);
+                return result;
+            } catch (error) {
+                await client.query(TRANS.ROLLBACK);
+                throw error;
+            } finally {
+                client.release();
+            }
+        } catch (error) {
+            throw error;
+        }
+    },
+
     async reminderApprovalEmail(ticket_id) {
         return await DBClientWrapper(async client => {
             try {

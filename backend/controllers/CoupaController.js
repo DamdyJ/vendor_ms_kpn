@@ -1,5 +1,7 @@
 const { raw } = require("express");
 const CoupaService = require("../class/CoupaService");
+const { isAxiosError } = require("axios");
+const Ticket = require("../models/TicketModel");
 
 exports.getData = async (req, res) => {
     try {
@@ -273,3 +275,34 @@ exports.updateVendor = async (req, res) => {
         });
     }
 };
+
+exports.submitVendorCoupa = async (req, res) => {
+    const { coupa_id, ven_detail, ven_banks, ven_files, is_draft } = req.body;
+    try {
+        const user_id = req?.cookies?.user_id;
+        if (!user_id) {
+            user_id - "UNKNOWN";
+        }
+        // await MutexModel.CreateLock(coupa_id, user_id);
+        const data = await Ticket.submitVendorCoupa({
+            coupa_id,
+            session: req.cookies,
+            ven_detail,
+            ven_banks,
+        });
+        res.status(200).send(data);
+    } catch (error) {
+        console.error(error);
+        let message = error?.message;
+        if (isAxiosError(error)) {
+            message = error.response.data.message;
+        }
+        res.status(500).send({
+            message,
+        });
+    } 
+    // finally {
+    //     await MutexModel.Unlock(coupa_id);
+    // }
+};
+
