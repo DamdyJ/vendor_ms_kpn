@@ -162,7 +162,8 @@ const Vendor = {
             [q, value] = crud.insertItem("vendor", detail, "*");
             console.log(q, value);
             const submit = await client.query(q, value);
-            return client;
+            console.log(submit);
+            return submit;
         } catch (err) {
             console.log(err);
             throw err;
@@ -549,6 +550,7 @@ const Vendor = {
                 }
             }
             const returnPromise = await Promise.all(promises);
+            console.log(returnPromise);
             return returnPromise;
         } catch (error) {
             console.error(error.stack);
@@ -1437,7 +1439,7 @@ const Vendor = {
                         limit_vendor,
                         lim_curr,
                         ven_acc,
-                        mpc.prefix as phone_pref
+                        mpc.prefix as phone_pref,
                         nitku,
                         coupa_id
                     from
@@ -1539,6 +1541,8 @@ const Vendor = {
                     ISRETRIEVEDBYSAP: 0,
                     FLAG_CRT: "N",
                     FLAG_EXT: "N",
+                    NITKU: ven.nitku,
+                    COUPA_ID: ven.coupa_id,
                 };
 
                 const [insDet, valDet] = crud.insertItemOra(

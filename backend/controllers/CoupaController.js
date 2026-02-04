@@ -236,6 +236,7 @@ exports.getDetail = async (req, res) => {
                 },
                 bank_information: bankInformations,
                 vendor_code: item["supplier-number"],
+                id: item.id,
             };
         });
 

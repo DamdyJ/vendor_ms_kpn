@@ -1181,10 +1181,6 @@ const Ticket = {
             await Vendor.setDetailVenCoupa(ven_detail, client);
             await Vendor.setBankRfctr(ven_banks, client, ven_detail.ven_id);
 
-            // Push ke Stagging
-
-            // Update ke Coupa
-
             await client.query(TRANS.COMMIT);
 
             return {
@@ -1199,6 +1195,7 @@ const Ticket = {
             await client.query(TRANS.ROLLBACK);
             throw error;
         } finally {
+            await Vendor.UploadStaging(ven_detail.ven_id);
             client.release();
         }
     },
