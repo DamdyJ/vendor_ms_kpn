@@ -36,7 +36,6 @@ exports.getData = async (req, res) => {
 function splitData(data, maxLength = 35, title) {
     if (!data) return {};
 
-    // pecah menjadi array tiap 40 karakter (rapi kata)
     const words = data.split(" ");
     const lines = [];
     let line = "";
@@ -52,7 +51,6 @@ function splitData(data, maxLength = 35, title) {
 
     if (line) lines.push(line);
 
-    // mapping ke street1, street2, ...
     const result = {};
     lines.forEach((l, i) => {
         result[`${title}${i + 1}`] = l;
@@ -80,9 +78,29 @@ exports.getDetail = async (req, res) => {
                     "custom-fields"
                 ];
             const company = item["custom-fields"]?.["company-code"];
+            const bankInformations = [];
+
             const bankData = item["custom-fields"]?.["nama-bank--bank-name"];
             const bankRegion =
                 item["custom-fields"]?.["negara-bank--bank-region"];
+
+            if (bankData || item["custom-fields"]?.["bank-account-number"]) {
+                bankInformations.push({
+                    bank_country: bankRegion?.["external-ref-num"] || null,
+                    bank_country_name: bankRegion?.name || null,
+
+                    bank_id: bankData?.id || null,
+                    bank_code: bankData?.["external-ref-code"] || null,
+                    bank_name: bankData?.name || null,
+
+                    bank_curr: item["preferred-currency"]?.code || null,
+                    bank_acc:
+                        item["custom-fields"]?.["bank-account-number"] || null,
+                    acc_hold:
+                        item["custom-fields"]?.["account-holder-name"] || null,
+                    swift_code: item["custom-fields"]?.["swift-code"] || null,
+                });
+            }
 
             const payTerm = item["payment-term"];
             const ppnData = item["custom-fields"]?.["ppn-type"];
@@ -215,14 +233,7 @@ exports.getDetail = async (req, res) => {
                         ],
                     ven_description: enterprise?.descriptive || null,
                 },
-                bank_information: {
-                    bank_country: bankRegion?.["external-ref-num"],
-                    bank_id: bankData?.id,
-                    bank_name: bankData.name,
-                    bank_curr: item["preferred-currency"]?.code,
-                    bank_acc: item["custom-fields"]?.["bank-account-number"],
-                    acc_hold: item["custom-fields"]?.["account-holder-name"],
-                },
+                bank_information: bankInformations,
                 vendor_code: item["supplier-number"],
             };
         });
