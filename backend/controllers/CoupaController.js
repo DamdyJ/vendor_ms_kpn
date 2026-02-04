@@ -91,8 +91,7 @@ exports.getDetail = async (req, res) => {
                     bank_country: bankRegion?.["external-ref-num"] || null,
                     bank_country_name: bankRegion?.name || null,
 
-                    bank_id: bankData?.id || null,
-                    bank_code: bankData?.["external-ref-code"] || null,
+                    bank_key: bankData?.["external-ref-code"] || null,
                     bank_name: bankData?.name || null,
 
                     bank_curr: item["preferred-currency"]?.code || null,
@@ -277,19 +276,14 @@ exports.updateVendor = async (req, res) => {
 };
 
 exports.submitVendorCoupa = async (req, res) => {
-    const { coupa_id, ven_detail, ven_banks, ven_files, is_draft } = req.body;
+    const { coupa_id, ven_detail, ven_banks } = req.body;
     try {
-        const user_id = req?.cookies?.user_id;
-        if (!user_id) {
-            user_id - "UNKNOWN";
-        }
-        // await MutexModel.CreateLock(coupa_id, user_id);
         const data = await Ticket.submitVendorCoupa({
-            coupa_id,
             session: req.cookies,
             ven_detail,
             ven_banks,
         });
+        if (!data) throw error;
         res.status(200).send(data);
     } catch (error) {
         console.error(error);
@@ -300,9 +294,8 @@ exports.submitVendorCoupa = async (req, res) => {
         res.status(500).send({
             message,
         });
-    } 
+    }
     // finally {
     //     await MutexModel.Unlock(coupa_id);
     // }
 };
-

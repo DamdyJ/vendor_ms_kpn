@@ -1154,53 +1154,52 @@ const Ticket = {
         }
     },
 
-    async submitVendorCoupa({
-        coupa_id,
-        session,
-        ven_detail,
-        ven_banks,
-    }) {
+    async getBankId(client, bank_key) {
+        const res = await client.query(
+            `select id from mst_bank_sap where bank_key = $1`,
+            [bank_key]
+        );
+
+        return res.rows[0]?.id || null;
+    },
+
+    async submitVendorCoupa({ session, ven_detail, ven_banks }) {
+        const client = await db.connect();
+
         try {
-            const client = await db.connect();
-            let result;
-            try {
-                await client.query(TRANS.BEGIN);
-                let sess = session;
-                if (Object.keys(session).length < 1) {
-                    sess = {
-                        user_id: "",
-                        emp_role_id: "VENDOR",
-                        bu_id: "",
-                        dept_id: "",
-                    };
-                    1;
-                }
-                ven_detail.ven_id = ven_detail.ven_id != "" ? ven_detail.ven_id : uuid.uuid();
+            await client.query(TRANS.BEGIN);
 
-                //set detail vendor
-                await Vendor.setDetailVenCoupa(ven_detail, client);
+            ven_detail.ven_id = uuid.uuid();
+            ven_detail.limit_vendor = 0;
 
-                //set bank vendor
-                await Vendor.setBankRfctr(ven_banks, client, ven_detail.ven_id);
-
-                result = {
-                        message: `Vendor ${ven_detail.coupa_id} is saved`,
-                        data: {
-                            ven_id: ven_detail.ven_id,
-                            name_1: ven_detail.name_1,
-                            title: ven_detail.title,
-                        },
-                    };
-                await client.query(TRANS.COMMIT);
-                return result;
-            } catch (error) {
-                await client.query(TRANS.ROLLBACK);
-                throw error;
-            } finally {
-                client.release();
+            // resolve bank_id
+            for (const item of ven_banks) {
+                item.bank_id = await this.getBankId(client, item.bank_id);
             }
+
+            // console.log(ven_banks);
+            await Vendor.setDetailVenCoupa(ven_detail, client);
+            await Vendor.setBankRfctr(ven_banks, client, ven_detail.ven_id);
+
+            // Push ke Stagging
+
+            // Update ke Coupa
+
+            await client.query(TRANS.COMMIT);
+
+            return {
+                message: `Vendor ${ven_detail.coupa_id} is saved`,
+                data: {
+                    ven_id: ven_detail.ven_id,
+                    name_1: ven_detail.name_1,
+                    title: ven_detail.title,
+                },
+            };
         } catch (error) {
+            await client.query(TRANS.ROLLBACK);
             throw error;
+        } finally {
+            client.release();
         }
     },
 
