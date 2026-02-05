@@ -147,6 +147,29 @@ const Vendor = {
         }
     },
 
+    async setDetailVenCoupa(detail, client) {
+        try {
+            const today = new Date();
+            if ("valid_until" in detail) {
+                const valid_until = new Date(
+                    detail.valid_until
+                ).toLocaleDateString();
+                detail.valid_until = valid_until ? valid_until : null;
+            }
+            detail.updated_at = moment(today).format("YYYY-MM-DD");
+            detail.created_at = moment(today).format("YYYY-MM-DD");
+
+            [q, value] = crud.insertItem("vendor", detail, "*");
+            console.log(q, value);
+            const submit = await client.query(q, value);
+            console.log(submit);
+            return submit;
+        } catch (err) {
+            console.log(err);
+            throw err;
+        }
+    },
+
     async setTemp(params) {
         const { fields, uploaded_files } = params;
         let promises = [];
@@ -504,6 +527,7 @@ const Vendor = {
             for (let bank of banks) {
                 method = bank.method;
                 const payload = {
+                    bankv_id: "",
                     ven_id: ven_id,
                     bank_id: bank.bank_id,
                     bank_acc: bank.bank_acc,
@@ -513,7 +537,7 @@ const Vendor = {
                 };
                 switch (method) {
                     case "insert":
-                        payload.bankv_id = bank.id;
+                        payload.bankv_id = bank.id ? bank.id : uuid.uuid();
                         [q, val] = crud.insertItem("VEN_BANK", payload);
                         promises.push(client.query(q, val));
                         break;
@@ -526,6 +550,7 @@ const Vendor = {
                 }
             }
             const returnPromise = await Promise.all(promises);
+            console.log(returnPromise);
             return returnPromise;
         } catch (error) {
             console.error(error.stack);
@@ -715,7 +740,12 @@ const Vendor = {
         const promise = new Promise(async (resolve, reject) => {
             const q = `SELECT HEADER FROM VEN_CODE_HD WHERE local_ovs = $1 and ven_acc = $2 and ven_type = $3 and ven_group = $4`;
             try {
-                const headercode = await client.query(q, [local_ovs, ven_acc, ven_type, ven_group]);
+                const headercode = await client.query(q, [
+                    local_ovs,
+                    ven_acc,
+                    ven_type,
+                    ven_group,
+                ]);
                 resolve({ status: true, header: headercode.rows[0] });
             } catch (err) {
                 reject({ status: false, message: "Header not found" });
@@ -945,14 +975,17 @@ const Vendor = {
                     },
                     "ticket_id"
                 );
-                await client.query(`UPDATE ticket
+                await client.query(
+                    `UPDATE ticket
                                 set reject_by = 'VERIFIC',
                                 cur_pos = 'PROC',
                                 remarks= $1,
                                 ticket_state = 'FINA',
                                 updated_at = DEFAULT
                                 where token = $2
-                                returning ticket_id`, [notes, proc_email[0].token]);
+                                returning ticket_id`,
+                    [notes, proc_email[0].token]
+                );
                 await client.query(qins, valins);
                 // send reject email to proc
                 await Emailer.rejectedVerif(
@@ -1406,7 +1439,9 @@ const Vendor = {
                         limit_vendor,
                         lim_curr,
                         ven_acc,
-                        mpc.prefix as phone_pref
+                        mpc.prefix as phone_pref,
+                        nitku,
+                        coupa_id
                     from
                         vendor v
                     left join mst_company mc on
@@ -1506,6 +1541,8 @@ const Vendor = {
                     ISRETRIEVEDBYSAP: 0,
                     FLAG_CRT: "N",
                     FLAG_EXT: "N",
+                    NITKU: ven.nitku,
+                    COUPA_ID: ven.coupa_id,
                 };
 
                 const [insDet, valDet] = crud.insertItemOra(
