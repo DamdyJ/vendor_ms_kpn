@@ -1,4 +1,5 @@
 const express = require("express");
+const morgan = require("morgan");
 const header = require("./backend/middleware/header");
 const app = express();
 const dotenv = require("dotenv").config({
@@ -58,6 +59,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(routers);
+app.use(
+    morgan(":method :url :status :res[content-length] - :response-time ms")
+);
 app.use(express.static(path.join(__dirname, "public/build")));
 app.use("/static", express.static(path.join(__dirname, "backend/public")));
 app.get("/*$", (req, res) => {

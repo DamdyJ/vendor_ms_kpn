@@ -30,9 +30,5 @@ route.get("/simple", AuthMiddleware.authSession, controller.GetSimpleData);
 route.get("/syncstage", controller.SyncStagingVendor);
 route.get("/getprogsync", controller.ShowProgressSyncSAP);
 route.post("/scriptcutoff", controller.UploadCutoffVendorUser);
-// Get Data SFTP
-const routeSftp = express.Router();
-routeSftp.post("/", VendorController.GetDataSFTP);
-route.use("/sftp", routeSftp);
 
 module.exports = route;
