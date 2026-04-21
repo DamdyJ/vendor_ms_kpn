@@ -634,4 +634,60 @@ EmailModel.EndTicket = async (ven_name, ven_code, config) => {
         throw error;
     }
 };
+
+EmailModel.coupaEmail = async (client, ven_detail, ven_banks) => {
+    try {
+        const { rows } = await client.query(`
+            SELECT email
+            FROM mst_mgr
+            WHERE emp_role_id = 'C_LEVEL'
+            AND is_active = true
+            LIMIT 1
+        `);
+
+        if (!rows.length) {
+            throw new Error("C-Level email not found");
+        }
+
+        const to = rows[0].email;
+
+        const config = {
+            to,
+            cc: process.env.COUPA_EMAIL_CC,
+        };
+
+        const banks_html = await Promise.all(
+            ven_banks.map(async bank => {
+                const { rows } = await client.query(
+                    `SELECT bank_name FROM mst_bank_sap WHERE id::varchar = $1`,
+                    [bank.bank_id]
+                );
+                const bank_name = rows[0]?.bank_name ?? bank.bank_id;
+                return `
+                <tr>
+                    <td>${bank.bank_country ?? ""}</td>
+                    <td>${bank_name}</td>
+                    <td>${bank.bank_curr ?? ""}</td>
+                    <td>${bank.bank_acc ?? ""}</td>
+                    <td>${bank.acc_hold ?? ""}</td>
+                </tr>
+                `;
+            })
+        );
+
+        const html_gen = EmailGen.Submit_Coupa(ven_detail, banks_html);
+        const setup = {
+            from: process.env.SMTP_USERNAME,
+            ...config,
+            subject: `Information Coupa Vendor ${ven_detail.name_1}`,
+            html: html_gen,
+        };
+
+        await tp.sendMail(setup);
+        return { skipped: false };
+    } catch (error) {
+        throw error;
+    }
+};
+
 module.exports = EmailModel;

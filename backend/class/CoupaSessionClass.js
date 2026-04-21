@@ -22,10 +22,10 @@ class CoupaSession {
         );
 
         token = response.data.access_token;
-        console.log(
-            "[CoupaSession] New token:",
-            token.substring(0, 20) + "..."
-        ); // debug
+        // console.log(
+        //     "[CoupaSession] New token:",
+        //     token.substring(0, 20) + "..."
+        // ); // debug
         return token;
     }
 

@@ -1,4 +1,10 @@
+const { raw } = require("express");
 const CoupaService = require("../class/CoupaService");
+const { isAxiosError } = require("axios");
+const Ticket = require("../models/TicketModel");
+const EmailModel = require("../models/EmailModelv2");
+const db = require("../config/connection");
+const Coupa = require("../models/CoupaModel");
 
 exports.getData = async (req, res) => {
     try {
@@ -32,10 +38,9 @@ exports.getData = async (req, res) => {
     }
 };
 
-function splitData(data, maxLength = 40, title) {
+function splitData(data, maxLength = 35, title) {
     if (!data) return {};
 
-    // pecah menjadi array tiap 40 karakter (rapi kata)
     const words = data.split(" ");
     const lines = [];
     let line = "";
@@ -51,7 +56,6 @@ function splitData(data, maxLength = 40, title) {
 
     if (line) lines.push(line);
 
-    // mapping ke street1, street2, ...
     const result = {};
     lines.forEach((l, i) => {
         result[`${title}${i + 1}`] = l;
@@ -79,9 +83,31 @@ exports.getDetail = async (req, res) => {
                     "custom-fields"
                 ];
             const company = item["custom-fields"]?.["company-code"];
+            const bankInformations = [];
+
             const bankData = item["custom-fields"]?.["nama-bank--bank-name"];
             const bankRegion =
                 item["custom-fields"]?.["negara-bank--bank-region"];
+
+            if (bankData || item["custom-fields"]?.["bank-account-number"]) {
+                bankInformations.push({
+                    bank_country: bankRegion?.["external-ref-num"] || null,
+                    bank_country_name: bankRegion?.name || null,
+
+                    bank_key: bankData?.["external-ref-code"] || null,
+                    bank_name: bankData?.name || null,
+
+                    bank_curr: item["preferred-currency"]?.code || null,
+                    bank_acc:
+                        item["custom-fields"]?.["bank-account-number"] || null,
+                    acc_hold:
+                        item["custom-fields"]?.["account-holder-name"] || null,
+                    swift_code: item["custom-fields"]?.["swift-code"] || null,
+                });
+            }
+
+            const payTerm = item["payment-term"];
+            const ppnData = item["custom-fields"]?.["ppn-type"];
 
             const fullAddress = [
                 address["street-address"],
@@ -112,17 +138,18 @@ exports.getDetail = async (req, res) => {
                     .filter(Boolean)
                     .join(" ") || null;
 
-            const streetLines = splitData(fullAddress, 40, "street");
-            const npwpLines = splitData(npwpAddress, 40, "npwp_street");
-            const skkpLines = splitData(skkpAddress, 40, "sppkp_street");
+            const streetLines = splitData(fullAddress, 35, "street");
+            const npwpLines = splitData(npwpAddress, 35, "npwp_street");
+            const skkpLines = splitData(skkpAddress, 35, "sppkp_street");
 
             return {
                 company: {
-                    title: item["title-perusahaan"],
-                    local_ovs: item["local-foreign"],
-                    country: address?.["country"].name,
-                    name_1: item.name,
-                    name_2: item["display-name"],
+                    title: item["custom-fields"]?.["title-perusahaan"] || null,
+                    local_ovs: item["custom-fields"]?.["local-foreign"] || null,
+                    country: address?.["country"]?.name || null,
+                    country_code: address?.["country"]?.code || null,
+                    name_1: item.name || null,
+                    name_2: item["display-name"] || null,
                     phone:
                         [
                             contact?.["phone-work"]?.extension,
@@ -138,78 +165,87 @@ exports.getDetail = async (req, res) => {
                         ]
                             .filter(Boolean)
                             .join(" ") || null,
-                    email: contact?.["email"],
+                    email: contact?.["email"] || null,
                     kawasan_berikat: insurance?.["kawasan-berikat"],
-                    coupa_id: item["supplier-id"],
+                    coupa_id: item["supplier-id"] || null,
                 },
                 social_media: {
-                    website_url: item.website,
+                    website_url: item.website || null,
                 },
                 company_organization: {
-                    nama_direktur: item["custom-fields"]?.["nama-direktur"],
+                    nama_direktur:
+                        item["custom-fields"]?.["nama-direktur"] || null,
                     nama_pic:
                         [contact?.["name-given"], contact?.["name-family"]]
                             .filter(Boolean)
                             .join(" ") || null,
                     no_telf_pic:
                         [
-                            contact?.["phone-mobile"]?.extension,
-                            contact?.["phone-mobile"]?.number,
+                            contact?.["phone-mobile"]?.extension || null,
+                            contact?.["phone-mobile"]?.number || null,
                         ]
                             .filter(Boolean)
                             .join(" ") || null,
-                    email_finance: item["custom-fields"]?.["email-finance"],
+                    email_finance:
+                        item["custom-fields"]?.["email-finance"] || null,
+                    email_pic: contact.email || null,
                 },
                 company_address: {
                     ...streetLines,
                     city: address?.city || null,
-                    postal: address?.["postarl-code"] || null,
+                    postal: address?.["postal-code"] || null,
                 },
                 npwp_address: {
                     ...npwpLines,
-                    city_npwp: insurance?.["npwp-city"]?.name,
-                    postal_npwp: insurance?.["npwp-postal-code"],
+                    city_npwp: insurance?.["npwp-city"]?.name || null,
+                    postal_npwp: insurance?.["npwp-postal-code"] || null,
                 },
                 sppkp_address: {
                     ...skkpLines,
-                    city_sppkp: enterprise?.["sppkp-city"].name,
-                    postal_sppkp: enterprise?.["sppkp-postal-code"],
+                    city_sppkp: enterprise?.["sppkp-city"]?.name || null,
+                    postal_sppkp: enterprise?.["sppkp-postal-code"] || null,
                 },
                 tax_payment: {
-                    is_pkp: insurance?.statuspkp,
+                    is_pkp: insurance?.statuspkp || null,
                     is_new_npwp: true,
-                    npwp: item["custom-fields"]?.["npwp-16digits"],
-                    pay_mthd: item["bank-method-payment"],
-                    pay_term: item["payment-term"]?.description || null,
-                    ppn_type: item["ppn-type"]?.["external-ref-num"],
-                    nitku: enterprise?.nitku,
+                    npwp: item["custom-fields"]?.["npwp-16digits"] || null,
+                    pay_mthd:
+                        item["custom-fields"]?.["bank-method-payment"] || null,
+                    pay_term: payTerm?.description || null,
+                    pay_term_code: payTerm?.code || null,
+                    pay_term_type: payTerm?.type || null,
+                    ppn_description: ppnData?.description || null,
+                    ppn_code: ppnData?.["external-ref-code"] || null,
+                    nitku: enterprise?.nitku || null,
                 },
                 vendor_detail: {
-                    company: company?.name,
-                    purch_org: purchOrg?.name,
-                    ven_group: "3RD PARTY",
-                    ven_acc: "Non-Trade",
-                    ven_type: item["custom-fields"]?.["vendor-category"],
-                    lim_curr: "-",
-                    limit_vendor: "-",
-                    is_tender: item["vendor-peserta-tender"],
-                    is_priority: item["vendor-prioritas"],
-                    is_interest: item["prioritas-pembayaran-interest"],
-                    description: enterprise?.descriptive,
+                    company: company?.name || null,
+                    company_code: company?.["external-ref-code"] || null,
+                    purch_org: purchOrg?.name || null,
+                    purch_org_code: purchOrg?.["external-ref-num"] || null,
+                    ven_group: "3RD_PARTY",
+                    ven_acc: "NON_TRADE",
+                    ven_type:
+                        item["custom-fields"]?.["vendor-category"] || null,
+                    lim_curr: "",
+                    limit_vendor: "",
+                    is_tender: item["custom-fields"]?.["vendor-peserta-tender"],
+                    is_priority: item["custom-fields"]?.["vendor-prioritas"],
+                    is_interest:
+                        item["custom-fields"]?.[
+                            "prioritas-pembayaran-interest"
+                        ],
+                    ven_description: enterprise?.descriptive || null,
                 },
-                bank_information: {
-                    bank_country: bankRegion?.["external-ref-num"],
-                    bank_id: bankData?.id,
-                    bank_curr: item["preferred-currency"]?.code,
-                    bank_acc: item["custom-fields"]?.["bank-account-number"],
-                    acc_hold: item["custom-fields"]?.["account-holder-name"],
-                },
+                bank_information: bankInformations,
                 vendor_code: item["supplier-number"],
+                id: item.id,
             };
         });
 
         res.json({
             success: true,
+            // rawData,
             data: filteredData[0],
         });
     } catch (error) {
@@ -240,5 +276,46 @@ exports.updateVendor = async (req, res) => {
             success: false,
             message: error.message,
         });
+    }
+};
+
+exports.submitVendorCoupa = async (req, res) => {
+    const { ven_detail, ven_banks } = req.body;
+    try {
+        const data = await Coupa.submitVendorCoupa({
+            ven_detail,
+            ven_banks,
+        });
+        if (!data) throw new Error("No data returned from submitVendorCoupa");
+        res.status(200).send(data);
+    } catch (error) {
+        console.error(error);
+        let message = error?.message;
+        if (isAxiosError(error)) {
+            message = error.response.data.message;
+        }
+        res.status(500).send({
+            message,
+        });
+    }
+};
+
+exports.sendEmail = async (req, res) => {
+    const { ven_detail, ven_banks } = req.body;
+    if (!ven_detail) {
+        return res.status(400).send({ message: "ven_detail is missing" });
+    }
+
+    const client = await db.connect();
+    try {
+        const data = await EmailModel.coupaEmail(client, ven_detail, ven_banks);
+        res.status(200).send({ message: "Email sent successfully", data });
+    } catch (error) {
+        console.error(error);
+        res.status(500).send({
+            message: error?.message ?? "Internal server error",
+        });
+    } finally {
+        client.release();
     }
 };
