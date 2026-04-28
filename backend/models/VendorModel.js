@@ -23,10 +23,12 @@ const Vendor = {
                         LEFT JOIN TICKET_REQSTAT_VEN T ON T.VEN_ID = V.VEN_ID AND T.IS_ACTIVE = true
                         WHERE V.is_active is not null`;
 
+            const vals = [];
             if (isactive != "") {
-                q += ` and V.is_active = ${isactive}`;
+                q += ` and V.is_active = $1`;
+                vals.push(isactive);
             }
-            const result = await client.query(q);
+            const result = await client.query(q, vals);
             return {
                 count: result.rowCount,
                 data: result.rows,
@@ -68,7 +70,8 @@ const Vendor = {
         const promise = new Promise(async (resolve, reject) => {
             try {
                 let files = await client.query(
-                    `select * from temp_ven_file_atth where ven_id = '${ven_id}'`
+                    `select * from temp_ven_file_atth where ven_id = $1`,
+                    [ven_id]
                 );
                 if (files.rows.length === 0) {
                     resolve(true);
@@ -87,7 +90,8 @@ const Vendor = {
                     ];
                     const insertFile = await client.query(qInsert, values);
                     const cleanTemp = await client.query(
-                        `delete from temp_ven_file_atth where ven_id = '${ven_id}'`
+                        `delete from temp_ven_file_atth where ven_id = $1`,
+                        [ven_id]
                     );
                 });
                 resolve(true);
@@ -106,7 +110,8 @@ const Vendor = {
    */
         try {
             const isExist = await client.query(
-                `SELECT * FROM VENDOR WHERE ven_id = '${detail.ven_id}'`
+                `SELECT * FROM VENDOR WHERE ven_id = $1`,
+                [detail.ven_id]
             );
             const { rows: getStatusTicket } = await client.query(
                 `select reject_by, is_draft from ticket where ven_id = $1`,
@@ -136,6 +141,29 @@ const Vendor = {
             }
             const submitTicket = await client.query(q, value);
             return client;
+        } catch (err) {
+            console.log(err);
+            throw err;
+        }
+    },
+
+    async setDetailVenCoupa(detail, client) {
+        try {
+            const today = new Date();
+            if ("valid_until" in detail) {
+                const valid_until = new Date(
+                    detail.valid_until
+                ).toLocaleDateString();
+                detail.valid_until = valid_until ? valid_until : null;
+            }
+            detail.updated_at = moment(today).format("YYYY-MM-DD");
+            detail.created_at = moment(today).format("YYYY-MM-DD");
+
+            [q, value] = crud.insertItem("vendor", detail, "*");
+            console.log(q, value);
+            const submit = await client.query(q, value);
+            // console.log(submit);
+            return submit;
         } catch (err) {
             console.log(err);
             throw err;
@@ -505,6 +533,7 @@ const Vendor = {
                     country: bank.bank_country ?? null,
                     bank_curr: bank.bank_curr,
                     acc_hold: bank.acc_hold,
+                    acc_name: bank.acc_name,
                 };
                 switch (method) {
                     case "insert":
@@ -521,6 +550,7 @@ const Vendor = {
                 }
             }
             const returnPromise = await Promise.all(promises);
+            // console.log(returnPromise);
             return returnPromise;
         } catch (error) {
             console.error(error.stack);
@@ -577,7 +607,8 @@ const Vendor = {
                         ven_id = file.ven_id;
                     }
                     data = await client.query(
-                        `SELECT file_id, ven_id, file_name, file_type, created_at, created_by, desc_file FROM TEMP_VEN_FILE_ATTH WHERE file_id = '${file.file_id}'`
+                        `SELECT file_id, ven_id, file_name, file_type, created_at, created_by, desc_file FROM TEMP_VEN_FILE_ATTH WHERE file_id = $1`,
+                        [file.file_id]
                     );
                     if (data.rowCount === 0) {
                         break;
@@ -645,7 +676,8 @@ const Vendor = {
                 desc_file,
                 expired_date,
                 'insert' as method 
-                from temp_ven_file_atth where ven_id = '${vendor_id}' ${restfile}`
+                from temp_ven_file_atth where ven_id = $1 ${restfile}`,
+            [vendor_id]
         );
         tempFiles = getTempFiles.rows;
         let file_toUp = [...files, ...tempFiles];
@@ -660,7 +692,8 @@ const Vendor = {
                             ven_id = file.ven_id;
                         }
                         data = await client.query(
-                            `SELECT file_id, ven_id, file_name, file_type, created_at, created_by, desc_file, expired_date FROM TEMP_VEN_FILE_ATTH WHERE file_id = '${file.file_id}'`
+                            `SELECT file_id, ven_id, file_name, file_type, created_at, created_by, desc_file, expired_date FROM TEMP_VEN_FILE_ATTH WHERE file_id = $1`,
+                            [file.file_id]
                         );
                         if (data.rowCount === 0) {
                             break;
@@ -705,9 +738,14 @@ const Vendor = {
     async getHeaderCode({ local_ovs, ven_acc, ven_type, ven_group }) {
         const client = await db.connect();
         const promise = new Promise(async (resolve, reject) => {
-            const q = `SELECT HEADER FROM VEN_CODE_HD WHERE local_ovs='${local_ovs}' and ven_acc='${ven_acc}' and ven_type='${ven_type}' and ven_group='${ven_group}'`;
+            const q = `SELECT HEADER FROM VEN_CODE_HD WHERE local_ovs = $1 and ven_acc = $2 and ven_type = $3 and ven_group = $4`;
             try {
-                const headercode = await client.query(q);
+                const headercode = await client.query(q, [
+                    local_ovs,
+                    ven_acc,
+                    ven_type,
+                    ven_group,
+                ]);
                 resolve({ status: true, header: headercode.rows[0] });
             } catch (err) {
                 reject({ status: false, message: "Header not found" });
@@ -937,14 +975,17 @@ const Vendor = {
                     },
                     "ticket_id"
                 );
-                await client.query(`UPDATE ticket
+                await client.query(
+                    `UPDATE ticket
                                 set reject_by = 'VERIFIC',
                                 cur_pos = 'PROC',
-                                remarks= '${notes}',
+                                remarks= $1,
                                 ticket_state = 'FINA',
                                 updated_at = DEFAULT
-                                where token = '${proc_email[0].token}'
-                                returning ticket_id`);
+                                where token = $2
+                                returning ticket_id`,
+                    [notes, proc_email[0].token]
+                );
                 await client.query(qins, valins);
                 // send reject email to proc
                 await Emailer.rejectedVerif(
@@ -1039,31 +1080,39 @@ const Vendor = {
                     vendors.set(value.ven_id, value);
                 });
                 const bankbq = `
-                select 
-                    v.ven_id,
-                    vb.bankv_id,
-                    mbs.bank_name,
-                    bank_acc,
-                    acc_hold,
-                    a001.file_name as A001,
-                    a002.file_name as A002
-                from
-                    ven_bank vb
-                left join ven_file_atth a001 on
-                    vb.bankv_id = a001.bank_id
-                    and a001.file_type = 'A001'
-                left join ven_file_atth a002 on
-                    vb.bankv_id = a002.bank_id
-                    and a002.file_type = 'A002'
-                left join vendor v on
-                    v.ven_id = vb.ven_id
-                left join ticket t on t.ven_id = v.ven_id
-                left join approval_steps as2 on as2.id_doctype = t.approval_type and as2.index_approval = '0'
-                left join mst_bank_sap mbs on mbs.id = vb.bank_id::int
-                where
-                    v.is_verif is null 
-                                    and (v.ven_code is not null and trim(v.ven_code) <> '') and as2.bu_id <> 'CG'                                    
-                order by vb.ven_id desc
+                WITH vb AS (
+                    SELECT
+                        v.ven_id,
+                        vb.bankv_id,
+                        vb.bank_id,
+                        bank_acc,
+                        acc_hold,
+                        a001.file_name AS A001,
+                        a002.file_name AS A002
+                    FROM ven_bank vb
+                    LEFT JOIN vendor v ON v.ven_id = vb.ven_id
+                    LEFT JOIN ticket t ON t.ven_id = v.ven_id
+                    LEFT JOIN approval_steps as2 ON as2.id_doctype = t.approval_type
+                        AND as2.index_approval = '0'
+                    LEFT JOIN ven_file_atth a001 ON vb.bankv_id = a001.bank_id
+                        AND a001.file_type = 'A001'
+                    LEFT JOIN ven_file_atth a002 ON vb.bankv_id = a002.bank_id
+                        AND a002.file_type = 'A002'
+                    WHERE v.is_verif IS NULL
+                    AND (v.ven_code IS NOT NULL AND trim(v.ven_code) <> '')
+                    AND as2.bu_id <> 'CG'
+                )
+                , vb_numeric AS (
+                    SELECT *
+                    FROM vb
+                    WHERE bank_id ~ '^[0-9]+$'
+                )
+                SELECT
+                    vb_numeric.*,
+                    mbs.bank_name
+                FROM vb_numeric
+                LEFT JOIN mst_bank_sap mbs 
+                    ON mbs.id = CAST(vb_numeric.bank_id AS int);
                 `;
                 const { rows: banks } = await client.query(bankbq);
                 let initvenid = banks[0].ven_id;
@@ -1115,9 +1164,9 @@ const Vendor = {
                 left join mst_user mdm on mdm.user_id = t.mdm_id
                 left join mst_mgr mgr_pr on mgr_pr.mgr_id = proc.mgr_id
                 left join mst_mgr mgr_md on mgr_md.mgr_id = mdm.mgr_id
-                where t.token = '${ticket_id}'
+                where t.token = $1
             `;
-            const item = await client.query(getTargetsq);
+            const item = await client.query(getTargetsq, [ticket_id]);
             return item.rows[0];
         } catch (error) {
             console.error(error);
@@ -1390,7 +1439,9 @@ const Vendor = {
                         limit_vendor,
                         lim_curr,
                         ven_acc,
-                        mpc.prefix as phone_pref
+                        mpc.prefix as phone_pref,
+                        nitku,
+                        coupa_id
                     from
                         vendor v
                     left join mst_company mc on
@@ -1490,6 +1541,8 @@ const Vendor = {
                     ISRETRIEVEDBYSAP: 0,
                     FLAG_CRT: "N",
                     FLAG_EXT: "N",
+                    NITKU: ven.nitku,
+                    COUPA_ID: ven.coupa_id,
                 };
 
                 const [insDet, valDet] = crud.insertItemOra(
@@ -2147,6 +2200,49 @@ const Vendor = {
             }
         } catch (error) {
             throw error;
+        }
+    },
+
+    async allVerified(type) {
+        const client = await db.connect();
+        try {
+            let query = `
+            select 
+                v.ven_id as vendor_id,
+                v.ven_code as vendor_code,
+                v.name_1 as vendor_name,
+                v.email,
+                v.is_active,
+                v.ven_acc as vendor_account,
+                v.ven_type as vendor_type,
+                trim(concat_ws(' ',
+                    v.street,
+                    v.street2,
+                    v.street3,
+                    v.street4
+                )) as street_address
+            from vendor v
+            where v.is_pushsap = true
+        `;
+
+            const values = [];
+
+            if (type) {
+                values.push(type.toLowerCase());
+                query += ` and lower(v.ven_type) = $${values.length}`;
+            }
+
+            const result = await client.query(query, values);
+
+            return {
+                count: result.rowCount,
+                data: result.rows,
+            };
+        } catch (err) {
+            console.error("error fetching verified vendors:", err);
+            throw err;
+        } finally {
+            client.release();
         }
     },
 

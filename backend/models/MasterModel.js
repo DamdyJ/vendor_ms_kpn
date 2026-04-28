@@ -3,6 +3,7 @@ const qr = require("qrcode");
 const fa = require("speakeasy");
 const TRANS = require("../config/transaction");
 const crud = require("../helper/crudquery");
+const DBClientWrapper = require("../helper/DBClientWrapper");
 
 const Master = {
     async getCurrency() {
@@ -43,11 +44,9 @@ const Master = {
     async getCities(idCountry) {
         const client = await db.connect();
         try {
-            const where = `country_id = '${idCountry}'`;
-            let q = "SELECT DISTINCT city, code, country_id FROM mst_cities";
-            q = q + " where " + where;
-            q += " order by city asc";
-            const cities = await client.query(q);
+            let q =
+                "SELECT DISTINCT city, code, country_id FROM mst_cities where country_id = $1 order by city asc";
+            const cities = await client.query(q, [idCountry]);
             return {
                 count: cities.rowCount,
                 data: cities.rows,
@@ -123,19 +122,32 @@ const Master = {
 
     async getssrBank({ page, maxPage, que }) {
         const client = await db.connect();
-        let qtext = "";
-        if (que != null && que != "") {
-            qtext = ` where lower(b.bank_code) like '%${que}%' or lower(b.bank_key) like '%${que}%' or lower(b.bank_name) like '%${que}%'`;
-        }
-        let q = `select b.*, c.country_name from mst_bank_sap b left join mst_country c on b.country = c.country_code ${qtext} order by b.bank_code asc limit ${maxPage} offset ${
-            page * maxPage
-        } 
-        `;
         try {
-            const data = await client.query(q);
-            const allRows = await client.query(
-                `select count(*) as rowscount from mst_bank_sap b ${qtext}`
-            );
+            const vals = [];
+            let whereClauses = "";
+            if (que != null && que != "") {
+                whereClauses = ` where (lower(b.bank_code) like $1 or lower(b.bank_key) like $1 or lower(b.bank_name) like $1)`;
+                vals.push(`%${que.toLowerCase()}%`);
+            }
+            // pagination params
+            vals.push(maxPage);
+            vals.push(page * maxPage);
+
+            const q = `select b.*, c.country_name from mst_bank_sap b left join mst_country c on b.country = c.country_code ${whereClauses} order by b.bank_code asc limit $${
+                vals.length - 1
+            } offset $${vals.length}`;
+            const data = await client.query(q, vals);
+
+            // count query uses same whereClauses but only the first parameter if present
+            let countQuery;
+            let countVals = [];
+            if (whereClauses) {
+                countQuery = `select count(*) as rowscount from mst_bank_sap b ${whereClauses}`;
+                countVals.push(vals[0]);
+            } else {
+                countQuery = `select count(*) as rowscount from mst_bank_sap b`;
+            }
+            const allRows = await client.query(countQuery, countVals);
             return {
                 allrow: allRows.rows[0].rowscount,
                 count: data.rowCount,
@@ -305,10 +317,12 @@ const Master = {
             throw error;
         }
     },
-    async GetFileType({ title, ventype, bu_id, curpos }) {
+    async GetFileType({ title, ventype, bu_id, curpos, trade }) {
         try {
             const client = await db.connect();
             try {
+                let or = [];
+                let orval = [];
                 let where = [];
                 let whereval = [];
                 let index = 1;
@@ -378,14 +392,20 @@ const Master = {
                     whereval.push("STAFF");
                     index += 2;
                 }
+
+                if ((trade == "true") & (curpos != "VENDOR")) {
+                    or.push(`bu_id = $${index} and trade = true`);
+                    orval.push(bu_id);
+                    index++;
+                }
                 const { rows } = await client.query(
                     `
                     select file_code, file_type, is_mandatory, help, helpen, need_exp_date
-                    from mst_file_type where ${where.join(
-                        " and "
-                    )} order by file_code asc                    
+                    from mst_file_type where ${where.join(" and ")} ${
+                        or.length > 0 ? `or (${or.join("")}) ` : ""
+                    }order by file_code asc                    
                     `,
-                    whereval
+                    [...whereval, ...orval]
                 );
                 return rows;
             } catch (error) {
@@ -585,6 +605,45 @@ const Master = {
         } catch (error) {
             throw error;
         }
+    },
+
+    async GetExistedDeptofBU() {
+        return DBClientWrapper(async client => {
+            try {
+                const { rows } = await client.query(
+                    `
+                    select
+                        distinct bu_id,
+                        dept_id,
+                        md.dept_name
+                    from
+                        mst_user mu
+                    left join mst_department md on md.dept_code = mu.dept_id
+                    where
+                        bu_id is not null
+                        and bu_id <> ''
+                        and bu_id <> 'ADMIN'
+                        and dept_id <> ''
+                    order by bu_id
+                    `
+                );
+                const combi = new Map();
+                for (const row of rows) {
+                    if (!combi.has(row.bu_id)) {
+                        combi.set(row.bu_id, [
+                            { value: row.dept_id, label: row.dept_name },
+                        ]);
+                    } else {
+                        combi
+                            .get(row.bu_id)
+                            .push({ value: row.dept_id, label: row.dept_name });
+                    }
+                }
+                return Object.fromEntries(combi);
+            } catch (error) {
+                throw error;
+            }
+        });
     },
 };
 

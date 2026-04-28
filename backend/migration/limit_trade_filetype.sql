@@ -1,0 +1,1 @@
+ALTER TABLE public.mst_file_type ADD trade bool DEFAULT false NULL;

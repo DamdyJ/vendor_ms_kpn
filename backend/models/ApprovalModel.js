@@ -222,16 +222,18 @@ ApprovalModel.CreateApprovalFlow = async ({
             let approval_steps = [];
             for (const f of flow) {
                 let method_flow = "update";
+                //check if index approval exist with current doctype
                 const { rows: is_step_exist } = await client.query(
                     `select id from approval_steps
                     where index_approval = $1 and id_doctype = $2`,
                     [f.index_approval, id_doctype]
                 );
-
+                // if it is new approval index, act as insert
                 if (is_step_exist.length == 0) {
                     method_flow = "insert";
                 }
                 let id_on_submit = null;
+                //if there's a on submit condition, create uuid for it
                 if (f.on_submit) {
                     id_on_submit = f.on_submit.id;
                     if (!id_on_submit) {
@@ -259,6 +261,7 @@ ApprovalModel.CreateApprovalFlow = async ({
                     enabled_input: f.enabled_input,
                     id_doctype: id_doctype,
                 };
+                //insert and update to approval_steps
                 let queFlow, valFlow;
                 if (method_flow == "insert") {
                     payload = {
@@ -574,6 +577,7 @@ ApprovalModel.EndApproval = async (client, ticket_id, user_id) => {
                 verificator[0].email
             );
             await Vendor.UploadStaging(ven_detail.ven_id, client);
+            await Emailer.NotifPajak(ven_detail);
         } else {
             const result = await CGApi.SubmitToTiptop(
                 client,
@@ -755,9 +759,9 @@ ApprovalModel.GetNextIndexApproval = async (data, ticket_id, client) => {
                 if (is_change) break;
                 let dt = on_sub_cond[i];
                 let conditions = dt.condition;
-                for (let l = 0; i < conditions.length; i++) {
+                for (let k = 0; k < conditions.length; k++) {
                     if (is_change) break;
-                    let dt_cond = conditions[l];
+                    let dt_cond = conditions[k];
                     let temp_data_field = data[dt_cond.field];
                     let data_field = parseInt(temp_data_field);
                     let val_comparator = parseInt(dt_cond.value);
@@ -770,6 +774,7 @@ ApprovalModel.GetNextIndexApproval = async (data, ticket_id, client) => {
                     if (data_field == undefined) {
                         throw new Error("Field data is undefined");
                     }
+
                     switch (dt_cond.condition) {
                         case "eq":
                             if (data_field == val_comparator) {

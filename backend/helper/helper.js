@@ -1,3 +1,7 @@
+const fs = require("fs");
+const csv_parser = require("csv-parser");
+const path = require("path");
+
 function generate4Digit() {
     return Math.floor(Math.random() * 9000) + 1000;
 }
@@ -369,5 +373,6 @@ style="
 
     `;
 }
+
 
 module.exports = { generate4Digit, emailTemplate };

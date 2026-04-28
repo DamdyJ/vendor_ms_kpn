@@ -8,16 +8,22 @@ const Emailer = require("../models/EmailModel");
 const moment = require("moment");
 const ApprovalTracker = require("../class/ApprovalTrackerClass");
 const ApprovalModel = require("./ApprovalModel");
+const MutexModel = require("./MutexModel");
+const DBClientWrapper = require("../helper/DBClientWrapper");
+const EmailModel = require("./EmailModelv2");
 
 const Ticket = {
     async showAll({ is_active, ticket_state }) {
         const client = await db.connect();
         try {
-            let where = "";
-            if (is_active === "true") {
-                where = `WHERE T.is_active = ${is_active} AND ticket_state in (${ticket_state}) `;
-            } else {
-                where = `WHERE T.is_active = ${is_active} `;
+            const params = [];
+            let where = "WHERE T.is_active = $1";
+            params.push(is_active === "true");
+
+            if (is_active === "true" && ticket_state) {
+                const stateArray = ticket_state.split(",").map(s => s.trim());
+                where += ` AND ticket_state = ANY($2)`;
+                params.push(stateArray);
             }
             let q = `SELECT T.token,
             T.is_active, 
@@ -103,11 +109,11 @@ const Ticket = {
                     }
                     where_que_arr.push(`(${where_ttype_arr.join(" or ")})`);
                 }
-                if (emp_role_id == "STAFF" && is_active) {
-                    where_que_arr.push(`proc_id = $${idx}`);
-                    where_val.push(user_id);
-                    idx++;
-                }
+                // if (emp_role_id == "STAFF" && is_active) {
+                //     where_que_arr.push(`proc_id = $${idx}`);
+                //     where_val.push(user_id);
+                //     idx++;
+                // }
                 if (q) {
                     where_que_arr.push(
                         `t.ticket_id like $${idx} or v.ven_code like $${idx} or v.name_1 like $${idx}`
@@ -158,7 +164,8 @@ const Ticket = {
                             WHEN T.VALID_UNTIL < NOW() THEN true
                             ELSE false 
                         END AS IS_EXPIRED,
-                        t.approval_pos
+                        t.approval_pos, 
+                        t.proc_id
                     FROM TICKET T
                     LEFT JOIN VENDOR V ON V.VEN_ID = T.VEN_ID
                     LEFT JOIN MST_USER UP ON T.updated_by = UP.user_id
@@ -394,7 +401,8 @@ const Ticket = {
                             as2.emp_role_id,
                             as2.dept_id,
                             as2.bu_id,
-                            bu_ticket.bu_id as bu_ticket_type
+                            bu_ticket.bu_id as bu_ticket_type,
+                            t.proc_id
                         from
                             TICKET T
                         left join VENDOR V on
@@ -733,8 +741,8 @@ const Ticket = {
             await client.query(TRANS.COMMIT);
             return [upTick.rows[0].ticket_id, reject_by, ticket.name_1];
         } catch (err) {
-            console.error(err.stack);
             await client.query(TRANS.ROLLBACK);
+            console.error(err?.stack);
             return err;
         } finally {
             client.release();
@@ -1146,15 +1154,59 @@ const Ticket = {
         }
     },
 
+    async reminderApprovalEmail(ticket_id) {
+        return await DBClientWrapper(async client => {
+            try {
+                const approvalTracker = new ApprovalTracker(client, ticket_id);
+                await approvalTracker.init();
+                const currentStep = approvalTracker.getCurrentStep();
+                if (!currentStep.wo_auth) {
+                    throw new Error("Approval flow doesn't need reminder");
+                }
+                //move position backward to resend
+                const backStep = approvalTracker.getApprovalStep(
+                    parseInt(currentStep.index_approval) - 1 < 0
+                        ? "0"
+                        : (parseInt(currentStep.index_approval) - 1).toString()
+                );
+
+                const emailType = backStep.def_submit_email;
+                //
+                const emailConfig = {
+                    to: currentStep.email,
+                };
+
+                const { rows: last_token } = await client.query(
+                    `
+                    select token_appr_link from ticket where token = $1
+                    `,
+                    [ticket_id]
+                );
+                await EmailModel.ProcessEmailGen(
+                    emailType,
+                    emailConfig,
+                    ticket_id,
+                    client,
+                    currentStep,
+                    { token_appr: last_token[0].token_appr_link },
+                    true
+                );
+                return true;
+            } catch (error) {
+                throw error;
+            }
+        });
+    },
+
     async processByLink(token_appr) {
         try {
             const client = await db.connect();
+            /**
+             * @type {{emp_role_id : string, bu_id : string, dept_id : string, ticket_id : string}}
+             */
+            const decoded = jwt.decode(token_appr, process.env.TOKEN_KEY);
             try {
                 await client.query(TRANS.BEGIN);
-                /**
-                 * @type {{emp_role_id : string, bu_id : string, dept_id : string, ticket_id : string}}
-                 */
-                const decoded = jwt.decode(token_appr, process.env.TOKEN_KEY);
                 const ApprovalTrack = new ApprovalTracker(
                     client,
                     decoded.ticket_id
@@ -1164,6 +1216,7 @@ const Ticket = {
                 let emp_role_id = ApprovalTrack.current_step.emp_role_id;
                 let bu_id = ApprovalTrack.current_step.bu_id;
                 let dept_id = ApprovalTrack.current_step.dept_id;
+                await MutexModel.CreateLock(decoded.ticket_id, emp_role_id);
                 if (!ApprovalTrack.ticket.is_active) {
                     throw new Error("Ticket inactive");
                 }
@@ -1229,6 +1282,7 @@ const Ticket = {
                 await client.query(TRANS.ROLLBACK);
                 throw error;
             } finally {
+                await MutexModel.Unlock(decoded.ticket_id);
                 client.release();
             }
         } catch (error) {
@@ -1239,11 +1293,11 @@ const Ticket = {
     async renderRejectForm(token_appr) {
         try {
             const client = await db.connect();
+            /**
+             * @type {{emp_role_id : string, bu_id : string, dept_id : string, ticket_id : string}}
+             */
+            const decoded = jwt.decode(token_appr, process.env.TOKEN_KEY);
             try {
-                /**
-                 * @type {{emp_role_id : string, bu_id : string, dept_id : string, ticket_id : string}}
-                 */
-                const decoded = jwt.decode(token_appr, process.env.TOKEN_KEY);
                 const ApprovalTrack = new ApprovalTracker(
                     client,
                     decoded.ticket_id
@@ -1253,6 +1307,7 @@ const Ticket = {
                 const emp_role_id = current_step.emp_role_id;
                 const bu_id = current_step.bu_id;
                 const dept_id = current_step.dept_id;
+                await MutexModel.CreateLock(decoded.ticket_id, emp_role_id);
                 if (!ApprovalTrack.ticket.is_active) {
                     throw new Error("Ticket inactive");
                 }
@@ -1294,6 +1349,7 @@ const Ticket = {
             } catch (error) {
                 throw error;
             } finally {
+                await MutexModel.Unlock(decoded.ticket_id);
                 client.release();
             }
         } catch (error) {

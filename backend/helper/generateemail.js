@@ -4787,6 +4787,18 @@ const Email = {
                             </tr>
                             <tr class="detail">
                                 <td width="20%" style="padding: 0.1em 2.5em">
+                                    Status Kawasan Berikat
+                                </td>
+                                <td style="padding: 0.1em 2.5em">
+                                    : ${
+                                        detail?.kawasan_berikat
+                                            ? "Kawasan Berikat"
+                                            : "Kawasan Bebas Berikat"
+                                    }
+                                </td>
+                            </tr>
+                            <tr class="detail">
+                                <td width="20%" style="padding: 0.1em 2.5em">
                                     Vendor Code
                                 </td>
                                 <td style="padding: 0.1em 2.5em">

@@ -21,6 +21,7 @@ router.get("/getporg", controller.getPurOrg);
 router.get("/getvat", controller.getVatType);
 router.get("/bu", controller.getBU);
 router.get("/dept", controller.getDept);
+router.get("/budept", controller.GetBuAndDeptCombi);
 router.get("/emprole", controller.getEmpRole);
 router.get("/title", controller.GetTitle);
 router.get("/badanus", controller.GetBadanUsaha);

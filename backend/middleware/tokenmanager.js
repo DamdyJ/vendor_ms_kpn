@@ -69,6 +69,7 @@ const TokenManager = {
                     };
                     throw exception;
                 }
+
                 req.useridSess = decode.id;
                 req.cookies = decode;
                 next();

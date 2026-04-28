@@ -10,6 +10,8 @@ const axios = require("axios");
 const pool = require("../config/connection");
 const saveToDatabase = require("../helper/sap_seeding");
 const getCodeSortClause = require("../helper/sort.js");
+const Emailer = require("../models/EmailModel.js");
+const TRANS = require("../config/transaction.js");
 
 const Material = {
     // Create a new material group
@@ -129,6 +131,7 @@ const Material = {
                 return { id: groupId, deleted: true };
             });
         } catch (error) {
+            await client.query(TRANS.ROLLBACK);
             console.error("Error soft deleting material group:", error);
             throw error;
         }
@@ -146,7 +149,23 @@ const Material = {
             return await DBClientWrapper(async client => {
                 const offset = (page - 1) * pageSize;
                 const searchPattern = searchQuery ? `%${searchQuery}%` : null;
-                const sortField = getCodeSortClause("mig.code", order);
+
+                // Whitelist allowed sort columns and directions
+                const _allowedSortCols = {
+                    code: "mig.code",
+                    name: "mig.name",
+                    id: "mig.id",
+                    created_at: "mig.created_at",
+                    updated_at: "mig.updated_at",
+                };
+                const _sortKey = String(sort || "code").toLowerCase();
+                const _safeSortCol = _allowedSortCols[_sortKey] || "mig.code";
+                const _safeOrder =
+                    order && String(order).toLowerCase() === "desc"
+                        ? "DESC"
+                        : "ASC";
+                const sortClause = `${_safeSortCol} ${_safeOrder}`;
+
                 // Only non-deleted groups
                 const countQuery = searchPattern
                     ? await client.query(
@@ -172,7 +191,7 @@ const Material = {
                             ) as materials_count
                         FROM mat_item_group mig
                         WHERE mig.deleted_at IS NULL AND (mig.code ILIKE $3 OR mig.name ILIKE $3)
-                        ORDER BY ${sortField}
+                        ORDER BY ${sortClause}
                         LIMIT $1 OFFSET $2
                     `
                     : `
@@ -189,7 +208,7 @@ const Material = {
                             ) as materials_count
                         FROM mat_item_group mig
                         WHERE mig.deleted_at IS NULL
-                        ORDER BY ${sortField}
+                        ORDER BY ${sortClause}
                         LIMIT $1 OFFSET $2
                     `;
                 const queryParams = searchPattern
@@ -214,7 +233,21 @@ const Material = {
     getAllMaterialGroups: async (sort = "code", order = "asc") => {
         try {
             return await DBClientWrapper(async client => {
-                const sortField = getCodeSortClause("code", order);
+                // Whitelist allowed sort columns and directions
+                const _allowedSortCols = {
+                    code: "code",
+                    name: "name",
+                    id: "id",
+                    created_at: "created_at",
+                    updated_at: "updated_at",
+                };
+                const _sortKey = String(sort || "code").toLowerCase();
+                const _safeSortCol = _allowedSortCols[_sortKey] || "code";
+                const _safeOrder =
+                    order && String(order).toLowerCase() === "desc"
+                        ? "DESC"
+                        : "ASC";
+
                 const result = await client.query(`
                     SELECT
                         id,
@@ -222,7 +255,7 @@ const Material = {
                         name
                     FROM mat_item_group
                     WHERE deleted_at IS NULL
-                    ORDER BY ${sortField}
+                    ORDER BY ${_safeSortCol} ${_safeOrder}
                 `);
                 return result.rows;
             });
@@ -236,7 +269,20 @@ const Material = {
     getAllSubgroupsByGroup: async (groupId, sort = "code", order = "asc") => {
         try {
             return await DBClientWrapper(async client => {
-                const sortField = getCodeSortClause("code", order);
+                // Whitelist allowed sort columns and directions
+                const _allowedSortCols = {
+                    code: "code",
+                    name: "name",
+                    id: "id",
+                    created_at: "created_at",
+                    updated_at: "updated_at",
+                };
+                const _sortKey = String(sort || "code").toLowerCase();
+                const _safeSortCol = _allowedSortCols[_sortKey] || "code";
+                const _safeOrder =
+                    order && String(order).toLowerCase() === "desc"
+                        ? "DESC"
+                        : "ASC";
                 const result = await client.query(
                     `
                     SELECT
@@ -246,7 +292,7 @@ const Material = {
                         item_group_id
                     FROM mat_item_sub_group
                     WHERE item_group_id = $1 AND deleted_at IS NULL
-                    ORDER BY ${sortField}
+                    ORDER BY ${_safeSortCol} ${_safeOrder}
                 `,
                     [groupId]
                 );
@@ -456,6 +502,21 @@ const Material = {
                 const totalCount = parseInt(countQuery.rows[0].total);
                 const totalPages = Math.ceil(totalCount / pageSize);
 
+                // Determine safe sorting column and order (whitelist)
+                const _allowedSortCols = {
+                    code: "mis.code",
+                    name: "mis.name",
+                    id: "mis.id",
+                    created_at: "mis.created_at",
+                    updated_at: "mis.updated_at",
+                };
+                const _sortKey = String(sortField || "code").toLowerCase();
+                const _safeSortCol = _allowedSortCols[_sortKey] || "mis.code";
+                const _safeOrder =
+                    order && String(order).toLowerCase() === "desc"
+                        ? "DESC"
+                        : "ASC";
+
                 // Get the subgroups with pagination and search filter if provided
                 const result = await client.query(
                     `
@@ -470,7 +531,7 @@ const Material = {
                     FROM mat_item_sub_group mis
                     JOIN mat_item_group mig ON mis.item_group_id = mig.id
                     WHERE ${whereClause}
-                    ORDER BY ${sortField} ${order}
+                    ORDER BY ${_safeSortCol} ${_safeOrder}
                     LIMIT $2 OFFSET $3
                 `,
                     params
@@ -501,7 +562,25 @@ const Material = {
         try {
             return await DBClientWrapper(async client => {
                 const offset = (page - 1) * pageSize;
-                const sortField = getCodeSortClause("m.code", order);
+
+                // Whitelist allowed sort columns and directions
+                const _allowedSortCols = {
+                    code: "m.code",
+                    name: "m.name",
+                    description: "m.description",
+                    created_at: "m.created_at",
+                    updated_at: "m.updated_at",
+                    uom: "m.unit_of_measurement",
+                    group_code: "mig.code",
+                    subgroup_code: "mis.code",
+                };
+                const _sortKey = String(sort || "code").toLowerCase();
+                const _safeSortCol = _allowedSortCols[_sortKey] || "m.code";
+                const _safeOrder =
+                    order && String(order).toLowerCase() === "desc"
+                        ? "DESC"
+                        : "ASC";
+                const sortClause = `${_safeSortCol} ${_safeOrder}`;
 
                 // First get the total count
                 const countQuery = await client.query(
@@ -533,6 +612,7 @@ const Material = {
                         m.code,
                         m.name,
                         m.description,
+                        m.unit_of_measurement,
                         m.alias1,
                         m.alias2,
                         m.alias3,
@@ -550,7 +630,7 @@ const Material = {
                     JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                     JOIN mat_item_group mig ON mis.item_group_id = mig.id
                     WHERE mig.id = $1
-                    ORDER BY ${sortField}
+                    ORDER BY ${sortClause}
                     LIMIT $2 OFFSET $3
                     `,
                     [groupId, pageSize, offset]
@@ -618,7 +698,25 @@ const Material = {
             return await DBClientWrapper(async client => {
                 const offset = (page - 1) * pageSize;
                 const searchPattern = searchQuery ? `%${searchQuery}%` : null;
-                const sortField = getCodeSortClause("m.code", order);
+
+                // Whitelist allowed sort columns and directions
+                const _allowedSortCols = {
+                    code: "m.code",
+                    name: "m.name",
+                    description: "m.description",
+                    created_at: "m.created_at",
+                    updated_at: "m.updated_at",
+                    uom: "m.unit_of_measurement",
+                    group_code: "mig.code",
+                    subgroup_code: "mis.code",
+                };
+                const _sortKey = String(sort || "code").toLowerCase();
+                const _safeSortCol = _allowedSortCols[_sortKey] || "m.code";
+                const _safeOrder =
+                    order && String(order).toLowerCase() === "desc"
+                        ? "DESC"
+                        : "ASC";
+                const sortClause = `${_safeSortCol} ${_safeOrder}`;
 
                 // Build where clause and params based on search query
                 let whereClause = "m.material_sub_group_id = $1";
@@ -696,6 +794,7 @@ const Material = {
                         m.name,
                         m.description,
                         m.long_text,
+                        m.unit_of_measurement,
                         CASE
                             WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
                             WHEN m.description IS NOT NULL THEN m.description
@@ -792,9 +891,36 @@ const Material = {
     },
 
     // Search all materials (including deleted)
-    searchAllMaterials: async (searchTerm, page = 1, pageSize = 10) => {
+    searchAllMaterials: async (
+        searchTerm,
+        page = 1,
+        pageSize = 10,
+        sorting_state
+    ) => {
         try {
             return await DBClientWrapper(async client => {
+                // Build a safe sorting clause from sorting_state by whitelisting columns and directions
+                let sorting_q = "";
+                if (sorting_state) {
+                    const colMap = {
+                        CODE: "m.code",
+                        NAME: "m.name",
+                        CREATED_AT: "m.created_at",
+                        UPDATED_AT: "m.updated_at",
+                        FULLCODE: "m.code",
+                        GROUPCODE: "mig.code",
+                        SUBGROUPCODE: "mis.code",
+                    };
+                    sorting_q = sorting_state.reduce((result, item) => {
+                        const col = String(item.col || "").toUpperCase();
+                        const state = String(item.state || "").toUpperCase();
+                        const mapped = colMap[col];
+                        if (!mapped) return result;
+                        const dir = state === "DESC" ? "DESC" : "ASC";
+                        return result + `${mapped} ${dir},`;
+                    }, "");
+                }
+                console.log(sorting_q);
                 const offset = (page - 1) * pageSize;
                 const safeSearchTerm = String(searchTerm || "").trim();
                 const toTsQuery = input =>
@@ -825,6 +951,7 @@ const Material = {
                             m.name,
                             m.description,
                             m.long_text,
+                            m.unit_of_measurement,
                             CASE
                                 WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
                                 WHEN m.description IS NOT NULL THEN m.description
@@ -862,7 +989,7 @@ const Material = {
                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
                         WHERE to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
                         OR m.code ILIKE $2
-                        ORDER BY code_match_rank, rank DESC, m.name ASC
+                        ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
                         LIMIT $4 OFFSET $5`,
                         [tsQuery, ilikeExact, ilikePartial, pageSize, offset]
                     );
@@ -879,6 +1006,7 @@ const Material = {
                             m.name,
                             m.description,
                             m.long_text,
+                            m.unit_of_measurement,
                             CASE
                                 WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
                                 WHEN m.description IS NOT NULL THEN m.description
@@ -902,7 +1030,7 @@ const Material = {
                         FROM mat_sap_data m
                         JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                        ORDER BY m.code ASC, m.name ASC
+                        ORDER BY ${sorting_q}m.code ASC, m.name ASC
                         LIMIT $1 OFFSET $2`,
                         [pageSize, offset]
                     );
@@ -935,9 +1063,35 @@ const Material = {
     },
 
     // Update searchMaterials to only return non-deleted materials
-    searchMaterials: async (searchTerm, page = 1, pageSize = 10) => {
+    searchMaterials: async (
+        searchTerm,
+        page = 1,
+        pageSize = 10,
+        sorting_state
+    ) => {
         try {
             return await DBClientWrapper(async client => {
+                // Build a safe sorting clause from sorting_state by whitelisting columns and directions
+                let sorting_q = "";
+                if (sorting_state) {
+                    const colMap = {
+                        CODE: "m.code",
+                        NAME: "m.name",
+                        CREATED_AT: "m.created_at",
+                        UPDATED_AT: "m.updated_at",
+                        FULLCODE: "m.code",
+                        GROUPCODE: "mig.code",
+                        SUBGROUPCODE: "mis.code",
+                    };
+                    sorting_q = sorting_state.reduce((result, item) => {
+                        const col = String(item.col || "").toUpperCase();
+                        const state = String(item.state || "").toUpperCase();
+                        const mapped = colMap[col];
+                        if (!mapped) return result;
+                        const dir = state === "DESC" ? "DESC" : "ASC";
+                        return result + `${mapped} ${dir},`;
+                    }, "");
+                }
                 const offset = (page - 1) * pageSize;
                 const safeSearchTerm = String(searchTerm || "").trim();
                 const toTsQuery = input =>
@@ -1007,7 +1161,7 @@ const Material = {
                         WHERE (dffromclient IS NULL OR dffromclient = false)
                         AND (to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
                         OR m.code ILIKE $2
-                        ORDER BY code_match_rank, rank DESC, m.name ASC
+                        ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
                         LIMIT $4 OFFSET $5`,
                         [tsQuery, ilikeExact, ilikePartial, pageSize, offset]
                     );
@@ -1024,6 +1178,7 @@ const Material = {
                             m.name,
                             m.description,
                             m.long_text,
+                            m.unit_of_measurement,
                             CASE
                                 WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
                                 WHEN m.description IS NOT NULL THEN m.description
@@ -1106,6 +1261,7 @@ const Material = {
                         m.code,
                         m.name,
                         m.description,
+                        m.unit_of_measurement,
                         m.alias1,
                         m.alias2,
                         m.alias3,
@@ -1154,7 +1310,13 @@ const Material = {
         }
     },
 
-    addAttachment: async (materialId, fileInfoArray, updatedBy) => {
+    addAttachment: async (
+        materialId,
+        fileInfoArray,
+        updatedBy,
+        userRole,
+        userName
+    ) => {
         const uploadedFiles = [];
         const cleanupFiles = [];
 
@@ -1218,6 +1380,32 @@ const Material = {
                             savedAs: file.newName,
                             type: mimeType,
                         });
+                    }
+
+                    // Get material details for mat_reqedit logging
+                    const materialDetailQuery = await client.query(
+                        "SELECT code, name FROM mat_sap_data WHERE id = $1",
+                        [materialId]
+                    );
+
+                    const materialDetail = materialDetailQuery.rows[0];
+
+                    if (userRole !== "MDM_MATERIAL") {
+                        for (const file of fileInfoArray) {
+                            const reqEditInsert = {
+                                material_code: materialDetail.code,
+                                material_name: materialDetail.name,
+                                attachment_path: file.newName,
+                                processed: false,
+                                created_at: "NOW()",
+                                edited_by: userName,
+                            };
+
+                            const [reqEditQuery, reqEditValues] =
+                                Crud.insertItem("mat_reqedit", reqEditInsert);
+
+                            await client.query(reqEditQuery, reqEditValues);
+                        }
                     }
 
                     const updateData = {
@@ -1320,41 +1508,115 @@ const Material = {
         }
     },
 
-    updateAliasesOnly: async (materialId, alias1, alias2, alias3) => {
+    updateAliasesOnly: async (
+        materialId,
+        alias1,
+        alias2,
+        alias3,
+        userRole,
+        userName
+    ) => {
         try {
             return await DBClientWrapper(async client => {
-                // Create data object for update
-                const updateData = {
-                    alias1: alias1 || null,
-                    alias2: alias2 || null,
-                    alias3: alias3 || null,
-                };
+                await client.query("BEGIN");
 
-                // Create where condition
-                const whereCondition = {
-                    id: materialId,
-                };
+                try {
+                    // Get current material details for comparison and tracking
+                    const materialDetailQuery = await client.query(
+                        "SELECT code, name, alias1, alias2, alias3 FROM mat_sap_data WHERE id = $1",
+                        [materialId]
+                    );
 
-                // Use Crud helper to generate query
-                const [query, values] = Crud.updateItem(
-                    "mat_sap_data",
-                    updateData,
-                    whereCondition
-                );
+                    if (materialDetailQuery.rows.length === 0) {
+                        throw new Error("Material not found");
+                    }
 
-                const result = await client.query(query, values);
+                    const materialDetail = materialDetailQuery.rows[0];
 
-                if (result.rowCount === 0) {
-                    throw new Error("Material not found or no changes made");
+                    // Create data object for update
+                    const updateData = {
+                        alias1: alias1 || null,
+                        alias2: alias2 || null,
+                        alias3: alias3 || null,
+                    };
+
+                    // Create where condition
+                    const whereCondition = {
+                        id: materialId,
+                    };
+
+                    // Use Crud helper to generate query
+                    const [query, values] = Crud.updateItem(
+                        "mat_sap_data",
+                        updateData,
+                        whereCondition
+                    );
+
+                    const result = await client.query(query, values);
+
+                    if (result.rowCount === 0) {
+                        throw new Error(
+                            "Material not found or no changes made"
+                        );
+                    }
+
+                    // Track alias changes for non-MDM_MATERIAL users
+                    if (userRole !== "MDM_MATERIAL") {
+                        const aliasChanges = [];
+
+                        if (materialDetail.alias1 !== (alias1 || null)) {
+                            aliasChanges.push(
+                                `Alias1: "${materialDetail.alias1 || ""}" → "${
+                                    alias1 || ""
+                                }"`
+                            );
+                        }
+                        if (materialDetail.alias2 !== (alias2 || null)) {
+                            aliasChanges.push(
+                                `Alias2: "${materialDetail.alias2 || ""}" → "${
+                                    alias2 || ""
+                                }"`
+                            );
+                        }
+                        if (materialDetail.alias3 !== (alias3 || null)) {
+                            aliasChanges.push(
+                                `Alias3: "${materialDetail.alias3 || ""}" → "${
+                                    alias3 || ""
+                                }"`
+                            );
+                        }
+
+                        if (aliasChanges.length > 0) {
+                            const reqEditInsert = {
+                                material_code: materialDetail.code,
+                                material_name: materialDetail.name,
+                                attachment_path: null,
+                                edited_alias: aliasChanges.join("; "),
+                                processed: false,
+                                created_at: "NOW()",
+                                edited_by: userName,
+                            };
+
+                            const [reqEditQuery, reqEditValues] =
+                                Crud.insertItem("mat_reqedit", reqEditInsert);
+
+                            await client.query(reqEditQuery, reqEditValues);
+                        }
+                    }
+
+                    await client.query("COMMIT");
+
+                    return {
+                        materialId,
+                        alias1: alias1 || null,
+                        alias2: alias2 || null,
+                        alias3: alias3 || null,
+                        updated: true,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
                 }
-
-                return {
-                    materialId,
-                    alias1: alias1 || null,
-                    alias2: alias2 || null,
-                    alias3: alias3 || null,
-                    updated: true,
-                };
             });
         } catch (error) {
             console.error("Error updating aliases:", error);
@@ -1849,12 +2111,13 @@ const Material = {
                 if (!Array.isArray(codes) || codes.length === 0) return [];
                 // Fetch materials by codes
                 const materialRes = await client.query(
-                    `SELECT
+                    `                    SELECT
                         m.id,
                         m.code,
                         m.name,
                         m.description,
                         m.long_text,
+                        m.unit_of_measurement,
                         m.alias1,
                         m.alias2,
                         m.alias3,
@@ -1904,71 +2167,128 @@ const Material = {
         }
     },
 
-    // Export materials to Excel (filtered by group/subgroup)
-    exportMaterialsToExcel: async (groupId, subGroupId) => {
+    // Export materials to Excel (filtered by group/subgroup or search query)
+    exportMaterialsToExcel: async (groupId, subGroupId, searchTerm) => {
         try {
             return await DBClientWrapper(async client => {
-                let query = `
-                    SELECT
-                        m.code,
-                        m.name,
-                        m.description,
-                        m.long_text,
-                        mig.code as group_code,
-                        mig.name as group_name,
-                        mis.code as subgroup_code,
-                        mis.name as subgroup_name,
-                        m.alias1,
-                        m.alias2,
-                        m.alias3,
-                        m.created_at,
-                        m.updated_at
-                    FROM mat_sap_data m
-                    JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
-                    JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                `;
-                const params = [];
-                let where = [];
+                let materialsQueryResult = [];
                 let groupCode = null;
                 let subGroupCode = null;
-                if (subGroupId) {
-                    where.push("mis.id = $" + (params.length + 1));
-                    params.push(subGroupId);
-                    // Fetch subgroup code and its parent group code
-                    const subRes = await client.query(
-                        "SELECT code, item_group_id FROM mat_item_sub_group WHERE id = $1",
-                        [subGroupId]
+                if (searchTerm && searchTerm.trim() !== "") {
+                    // Use the same logic as searchMaterials, but fetch all (no LIMIT)
+                    const safeSearchTerm = String(searchTerm || "").trim();
+                    const toTsQuery = input =>
+                        input
+                            .trim()
+                            .split(/\s+/)
+                            .map(word => `${word}:*`)
+                            .join(" & ");
+                    const tsQuery = toTsQuery(safeSearchTerm);
+                    const ilikeExact = safeSearchTerm;
+                    const ilikePartial = `%${safeSearchTerm}%`;
+                    const result = await client.query(
+                        `SELECT
+                            m.id,
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.long_text,
+                            m.unit_of_measurement,
+                            CASE
+                                WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
+                                WHEN m.description IS NOT NULL THEN m.description
+                                WHEN m.long_text IS NOT NULL THEN m.long_text
+                                ELSE NULL
+                            END AS combined_description,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            m.filter_code_1,
+                            m.filter_code_2,
+                            m.material_sub_group_id,
+                            m.created_at,
+                            m.updated_at,
+                            m.dfFromClient,
+                            m.created_by,
+                            mis.code AS "subGroupCode",
+                            mis.name AS "subGroupName",
+                            mig.code AS "groupCode",
+                            mig.name AS "groupName"
+                        FROM mat_sap_data m
+                        JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                        JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                        WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                        AND (
+                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                            OR m.code ILIKE $2
+                        )
+                        ORDER BY m.code ASC, m.name ASC`,
+                        [tsQuery, ilikePartial]
                     );
-                    if (subRes.rows.length > 0) {
-                        subGroupCode = subRes.rows[0].code;
-                        const groupIdFromSub = subRes.rows[0].item_group_id;
-                        if (groupIdFromSub) {
-                            const groupRes = await client.query(
-                                "SELECT code FROM mat_item_group WHERE id = $1",
-                                [groupIdFromSub]
-                            );
-                            if (groupRes.rows.length > 0)
-                                groupCode = groupRes.rows[0].code;
+                    materialsQueryResult = result.rows;
+                } else {
+                    let query = `
+                        SELECT
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.long_text,
+                            m.unit_of_measurement,
+                            mig.code as group_code,
+                            mig.name as group_name,
+                            mis.code as subgroup_code,
+                            mis.name as subgroup_name,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            m.created_at,
+                            m.updated_at
+                        FROM mat_sap_data m
+                        JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                        JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                    `;
+                    const params = [];
+                    let where = [];
+                    if (subGroupId) {
+                        where.push("mis.id = $" + (params.length + 1));
+                        params.push(subGroupId);
+                        // Fetch subgroup code and its parent group code
+                        const subRes = await client.query(
+                            "SELECT code, item_group_id FROM mat_item_sub_group WHERE id = $1",
+                            [subGroupId]
+                        );
+                        if (subRes.rows.length > 0) {
+                            subGroupCode = subRes.rows[0].code;
+                            const groupIdFromSub = subRes.rows[0].item_group_id;
+                            if (groupIdFromSub) {
+                                const groupRes = await client.query(
+                                    "SELECT code FROM mat_item_group WHERE id = $1",
+                                    [groupIdFromSub]
+                                );
+                                if (groupRes.rows.length > 0)
+                                    groupCode = groupRes.rows[0].code;
+                            }
                         }
+                    } else if (groupId) {
+                        where.push("mig.id = $" + (params.length + 1));
+                        params.push(groupId);
+                        // Fetch group code
+                        const groupRes = await client.query(
+                            "SELECT code FROM mat_item_group WHERE id = $1",
+                            [groupId]
+                        );
+                        if (groupRes.rows.length > 0)
+                            groupCode = groupRes.rows[0].code;
                     }
-                } else if (groupId) {
-                    where.push("mig.id = $" + (params.length + 1));
-                    params.push(groupId);
-                    // Fetch group code
-                    const groupRes = await client.query(
-                        "SELECT code FROM mat_item_group WHERE id = $1",
-                        [groupId]
-                    );
-                    if (groupRes.rows.length > 0)
-                        groupCode = groupRes.rows[0].code;
+                    if (where.length > 0) {
+                        query += " WHERE " + where.join(" AND ");
+                    }
+                    query += " ORDER BY m.code ASC, m.name ASC";
+                    const result = await client.query(query, params);
+                    materialsQueryResult = result.rows;
                 }
-                if (where.length > 0) {
-                    query += " WHERE " + where.join(" AND ");
-                }
-                query += " ORDER BY m.code ASC, m.name ASC";
-                const result = await client.query(query, params);
                 // Prepare data for Excel
-                const materialsData = result.rows.map(row => {
+                const materialsData = materialsQueryResult.map(row => {
                     let desc =
                         row.description && row.long_text
                             ? `${row.description} - ${row.long_text}`
@@ -1977,12 +2297,12 @@ const Material = {
                     desc = desc.replace(/\r\n|\r|\n/g, " ");
                     return {
                         Code: row.code,
-                        Name: row.name,
                         Description: desc,
-                        "Group Code": row.group_code,
-                        "Group Name": row.group_name,
-                        "Subgroup Code": row.subgroup_code,
-                        "Subgroup Name": row.subgroup_name,
+                        UOM: row.unit_of_measurement || "",
+                        "Group Code": row.group_code || row.groupCode,
+                        "Group Name": row.group_name || row.groupName,
+                        "Subgroup Code": row.subgroup_code || row.subGroupCode,
+                        "Subgroup Name": row.subgroup_name || row.subGroupName,
                         "Alias 1": row.alias1,
                         "Alias 2": row.alias2,
                         "Alias 3": row.alias3,
@@ -2006,6 +2326,7 @@ const Material = {
                     { wch: 20 }, // Code
                     { wch: 35 }, // Name
                     { wch: 60 }, // Description
+                    { wch: 10 }, // UOM
                     { wch: 15 }, // Group Code
                     { wch: 25 }, // Group Name
                     { wch: 15 }, // Subgroup Code
@@ -2183,9 +2504,78 @@ const Material = {
                 return { id: materialId, deleted: true };
             });
         } catch (error) {
+            s;
             console.error("Error soft deleting material:", error);
             throw error;
         }
+    },
+
+    EmailNotificationEditMaterial: async target_clock => {
+        return DBClientWrapper(async client => {
+            try {
+                await client.query(TRANS.BEGIN);
+                console.log(
+                    `[CRON] Running material edit notification for ${target_clock} PM batch`
+                );
+                // Get all unprocessed material edits
+                const result = await client.query(
+                    `SELECT id, material_code, material_name, attachment_path, edited_alias, edited_by, created_at
+                                 FROM mat_reqedit
+                                 WHERE processed = false
+                                 ORDER BY created_at DESC`
+                );
+
+                const { rows: getHostname } = await client.query(
+                    "SELECT hostname from hostname where mode_env = $1",
+                    [process.env.NODE_ENV]
+                );
+
+                const hostname = getHostname[0].hostname;
+
+                const userData = await client.query(
+                    `SELECT STRING_AGG(DISTINCT mu.email, ',') as emails
+                                 FROM mst_user mu
+                                 JOIN mst_page_access mpa ON mpa.user_group_id = mu.user_group
+                                 WHERE mpa.user_group_name = 'MDM_MATERIAL'`
+                );
+
+                if (result.rows.length > 0) {
+                    // Send email notification
+                    await Emailer.materialEditNotification(
+                        result.rows,
+                        `${target_clock} PM Batch`,
+                        hostname,
+                        userData.rows[0]?.emails
+                    );
+
+                    // Mark records as processed
+                    const materialIds = result.rows.map(row => row.id);
+                    await client.query(
+                        `UPDATE mat_reqedit
+                                         SET processed = true, processed_at = $2
+                                         WHERE id = ANY($1)`,
+                        [
+                            materialIds,
+                            moment()
+                                .tz("Asia/Jakarta")
+                                .format("YYYY-MM-DD HH:mm:ss+0700"),
+                        ]
+                    );
+
+                    console.log(
+                        `[CRON] ${target_clock} PM batch: Sent email for ${result.rows.length} material edits`
+                    );
+                } else {
+                    console.log(
+                        `[CRON] ${target_clock} PM batch: No material edits to process`
+                    );
+                }
+                await client.query(TRANS.COMMIT);
+            } catch (error) {
+                await client.query(TRANS.ROLLBACK);
+                throw error;
+            }
+        });
     },
 };
 

@@ -57,10 +57,11 @@ CGApi.CheckSessionCGExist = async () => {
 CGApi.GetVendorData = async (q, token, user_id) => {
     try {
         const axios = axiosInstance(token);
+        const usermdm = process.env.CGUSERMDM;
         const { data } = await axios.post("/get/vendor_search", {
             Company_Code: process.env.CGCOMP,
             Vendor_Name: q,
-            User_ID: user_id,
+            User_ID: usermdm,
         });
         const return_data = data.data.map(value => ({
             ...value,

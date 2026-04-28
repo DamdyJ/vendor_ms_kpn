@@ -621,16 +621,22 @@ const MaterialController = {
     searchMaterials: async (req, res) => {
         try {
             const { q } = req.query;
+            let sorting_state = [];
+            Object.keys(req.query).map(key => {
+                if (key == "q" || key == "pageSize" || key == "page") return;
+                sorting_state.push({ col: key, state: req.query[key] });
+            });
+
             const page = parseInt(req.query.page) || 1;
             const pageSize = parseInt(req.query.pageSize) || 10;
 
             // If no search query is provided, get all materials sorted by group
             const searchTerm = q ? q.trim() : "";
-
             const result = await Material.searchMaterials(
                 searchTerm,
                 page,
-                pageSize
+                pageSize,
+                sorting_state
             );
 
             res.status(200).json({
@@ -655,13 +661,19 @@ const MaterialController = {
     searchAllMaterials: async (req, res) => {
         try {
             const { q } = req.query;
+            let sorting_state = [];
+            Object.keys(req.query).map(key => {
+                if (key == "q" || key == "pageSize" || key == "page") return;
+                sorting_state.push({ col: key, state: req.query[key] });
+            });
             const page = parseInt(req.query.page) || 1;
             const pageSize = parseInt(req.query.pageSize) || 10;
             const searchTerm = q ? q.trim() : "";
             const result = await Material.searchAllMaterials(
                 searchTerm,
                 page,
-                pageSize
+                pageSize,
+                sorting_state
             );
             res.status(200).json({
                 success: true,
@@ -795,11 +807,17 @@ const MaterialController = {
                 }
             }
 
+            // Get user group from cookies for role checking
+            const userRole = req.cookies?.role;
+            const userName = req.cookies?.username;
+
             // Use the addAttachment method that handles both database and file operations
             const result = await Material.addAttachment(
                 materialId,
                 filesToProcess,
-                updatedBy
+                updatedBy,
+                userRole,
+                userName
             );
 
             res.status(200).json({
@@ -831,6 +849,8 @@ const MaterialController = {
             const { alias1, alias2, alias3 } = req.body;
 
             const updatedBy = req.cookies.user_id;
+            const userRole = req.cookies?.role;
+            const userName = req.cookies?.username;
 
             // Check if material exists
             const material = await Material.getMaterialById(materialId);
@@ -846,7 +866,9 @@ const MaterialController = {
                 materialId,
                 alias1,
                 alias2,
-                alias3
+                alias3,
+                userRole,
+                userName
             );
 
             // Update timestamps separately
@@ -1038,13 +1060,18 @@ const MaterialController = {
         }
     },
 
-    // Export materials to Excel (filtered by group/subgroup)
+    // Export materials to Excel (filtered by group/subgroup or search query)
     exportMaterialsToExcel: async (req, res) => {
         try {
             const groupId = req.query.groupId || null;
             const subGroupId = req.query.subGroupId || null;
+            const searchTerm = req.query.q || null;
             const { buffer, groupCode, subGroupCode } =
-                await Material.exportMaterialsToExcel(groupId, subGroupId);
+                await Material.exportMaterialsToExcel(
+                    groupId,
+                    subGroupId,
+                    searchTerm
+                );
 
             // Debug logging
             console.log(
@@ -1052,6 +1079,8 @@ const MaterialController = {
                 groupId,
                 "subGroupId:",
                 subGroupId,
+                "searchTerm:",
+                searchTerm,
                 "groupCode:",
                 groupCode,
                 "subGroupCode:",
@@ -1064,6 +1093,8 @@ const MaterialController = {
             else if (subGroupCode)
                 filename = `materials_subgroup_${subGroupCode}.xlsx`;
             else if (groupCode) filename = `materials_group_${groupCode}.xlsx`;
+            if (searchTerm && searchTerm.trim() !== "")
+                filename = `materials_search_${searchTerm}.xlsx`;
 
             console.log("[ExportExcel] Final filename:", filename);
 

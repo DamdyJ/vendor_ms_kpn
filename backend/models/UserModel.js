@@ -48,7 +48,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
         }
         const client = await db.connect();
         console.log(params);
-        client.query(TRANS.BEGIN);
+        await client.query(TRANS.BEGIN);
         if (params.hasOwnProperty("password")) {
             pass = await hashPassword(params.password);
         }
@@ -300,16 +300,20 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
             let status = true;
             const messages = [];
             const checkExistemaila = await connect.query(
-                `select user_id from mst_user where email = '${user_email}' `
+                `select user_id from mst_user where email = $1`,
+                [user_email]
             );
             const checkExistemailb = await connect.query(
-                `select user_id from mst_mgr where email = '${user_email}' `
+                `select user_id from mst_mgr where email = $1`,
+                [user_email]
             );
             const checkExistUnamea = await connect.query(
-                `select user_id from mst_user where username = '${username}' `
+                `select user_id from mst_user where username = $1`,
+                [username]
             );
             const checkExistUnameb = await connect.query(
-                `select user_id from mst_mgr where username = '${username}' `
+                `select user_id from mst_mgr where username = $1`,
+                [username]
             );
             if (
                 checkExistemaila.rowCount > 0 ||
@@ -389,13 +393,15 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                     IS_ACTIVE
                 FROM A_USERVENDOR)
                 AS user_vms
-                where USERNAME = '${username}'`
+                where USERNAME = $1`,
+                [username]
             );
             if (userData.rows.length === 0) {
                 throw new Error("User not found");
             }
             const userGroup = userData.rows[0].user_group;
-            const getAuthorization = await client.query(`
+            const getAuthorization = await client.query(
+                `
             SELECT 
                             PG.MENU_ID AS "id",
                             PG.PAGE,
@@ -422,9 +428,11 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                             FROM MST_PAGE PG
                             LEFT JOIN 
                             MST_PAGE_ACCESS 
-                            ACS ON ACS.PAGE_ID = PG.MENU_ID AND ACS.user_group_id = '${userGroup}'
+                            ACS ON ACS.PAGE_ID = PG.MENU_ID AND ACS.user_group_id = $1
                         order by PG.parent_id asc, is_parent asc
-            `);
+            `,
+                [userGroup]
+            );
             let authPerm = {};
             getAuthorization.rows.map(item => {
                 authPerm[item.page] = {
@@ -473,12 +481,13 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                 }
             );
             await client.query(TRANS.BEGIN);
-            let qUpRef = "";
             let is_reset_pwd = null;
             if (resdata.role === "MGR") {
-                qUpRef = `UPDATE MST_MGR set token = '${refreshToken}' where mgr_id = '${resdata.user_id}'`;
+                await client.query(
+                    "UPDATE MST_MGR set token = $1 where mgr_id = $2",
+                    [refreshToken, resdata.user_id]
+                );
             } else if (resdata.role === "VENDOR") {
-                qUpRef = `UPDATE a_uservendor SET token = '${refreshToken}' where user_id ='${resdata.user_id}'`;
                 // IF USER VENDOR, CHECK RESET PASS
                 // SELECT IS_RESET_PWD
                 const resIsPwd = await client.query(
@@ -487,11 +496,16 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                 );
                 // console.log(resIsPwd);
                 is_reset_pwd = resIsPwd.rows[0].is_reset_pwd;
+                await client.query(
+                    "UPDATE a_uservendor SET token = $1 where user_id = $2",
+                    [refreshToken, resdata.user_id]
+                );
             } else {
-                qUpRef = `UPDATE MST_USER SET token = '${refreshToken}' where user_id ='${resdata.user_id}'`;
+                await client.query(
+                    "UPDATE MST_USER SET token = $1 where user_id = $2",
+                    [refreshToken, resdata.user_id]
+                );
             }
-            // console.log(qUpRef);
-            await client.query(qUpRef);
             await client.query(TRANS.COMMIT);
             return {
                 fullname: resdata.fullname,
@@ -574,7 +588,8 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                     throw new Error("User not found");
                 }
                 const user = userData.rows[0];
-                const auth = await client.query(`
+                const getAuthorization = await client.query(
+                    `
                     SELECT 
                                     PG.MENU_ID AS "id",
                                     PG.PAGE,
@@ -601,11 +616,13 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                                     FROM MST_PAGE PG
                                     LEFT JOIN 
                                     MST_PAGE_ACCESS 
-                                    ACS ON ACS.PAGE_ID = PG.MENU_ID AND ACS.user_group_id = '${user.user_group}'
+                                    ACS ON ACS.PAGE_ID = PG.MENU_ID AND ACS.user_group_id = $1
                                 order by PG.parent_id asc, is_parent asc
-                    `);
+                    `,
+                    [user.user_group]
+                );
                 let authPerm = {};
-                auth.rows.map(item => {
+                getAuthorization.rows.map(item => {
                     authPerm[item.page] = {
                         create: item.fcreate,
                         read: item.fread,
@@ -656,7 +673,8 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
     getAuthorization: async userGroup => {
         const client = await db.connect();
         try {
-            const getAuthorization = await client.query(`
+            const getAuthorization = await client.query(
+                `
             SELECT 
                             PG.MENU_ID AS "id",
                             PG.PAGE,
@@ -683,9 +701,11 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                             FROM MST_PAGE PG
                             LEFT JOIN 
                             MST_PAGE_ACCESS 
-                            ACS ON ACS.PAGE_ID = PG.MENU_ID AND ACS.user_group_id = '${userGroup}'
-                        order by PG.parent_id asc, is_parent asc
-            `);
+                ACS ON ACS.PAGE_ID = PG.MENU_ID AND ACS.user_group_id = $1
+                    order by PG.parent_id asc, is_parent asc
+            `,
+                [userGroup]
+            );
             let authPerm = {};
             getAuthorization.rows.map(item => {
                 authPerm[item.page] = {
@@ -733,9 +753,9 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                                 SELECT 
                                     distinct user_group_name
                                 from
-                                    mst_page_access where user_group_id = '${group_id}' ;
+                                    mst_page_access where user_group_id = $1 ;
                 `;
-                const getname = await client.query(secNameq);
+                const getname = await client.query(secNameq, [group_id]);
                 secName = getname.rows[0].user_group_name;
             }
             const secMtxq = `SELECT 
@@ -764,10 +784,13 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                                 FROM MST_PAGE PG
                                 LEFT JOIN 
                                 MST_PAGE_ACCESS 
-                                ACS ON ACS.PAGE_ID = PG.MENU_ID AND ACS.user_group_id = '${group_id}'
+                                ACS ON ACS.PAGE_ID = PG.MENU_ID AND ACS.user_group_id = $1
                             order by PG.parent_id asc, is_parent asc
                             `;
-            const secMtx = await client.query(secMtxq);
+            const secMtx = await client.query(
+                secMtxq,
+                group_id ? [group_id] : [""]
+            );
             return {
                 name: secName,
                 count: secMtx.rowCount,
@@ -787,7 +810,8 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
             await connect.query(TRANS.BEGIN);
             if (group_id != "") {
                 await connect.query(
-                    `delete from mst_page_access where user_group_id = '${group_id}' ;`
+                    `delete from mst_page_access where user_group_id = $1 ;`,
+                    [group_id]
                 );
             }
             if (group_id == "") {

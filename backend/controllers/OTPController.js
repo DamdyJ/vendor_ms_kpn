@@ -13,7 +13,8 @@ OTPController.sendOTP = async (req, res) => {
         if (username === "" || username === undefined) {
             throw new Error("Provide username");
         }
-        const fetchData = await client.query(`SELECT * FROM 
+        const fetchData = await client.query(
+            `SELECT * FROM 
             (SELECT USERNAME,
                 PASSWORD,
                 FULLNAME,
@@ -41,7 +42,9 @@ OTPController.sendOTP = async (req, res) => {
                 EMAIL
             FROM A_USERVENDOR)
             AS user_vms
-            where USERNAME = '${username}'`);
+            where USERNAME = $1`,
+            [username]
+        );
         if (fetchData.rowCount < 1) {
             throw new Error("Username not found");
         }
@@ -86,7 +89,8 @@ OTPController.validateOTP = async (req, res) => {
             throw new Error("Please provide OTP code");
         }
         const checkOTP = await client.query(
-            `select otp_code, otp_timelimit from otp_transaction where user_id = '${user_id}'`
+            `select otp_code, otp_timelimit from otp_transaction where user_id = $1`,
+            [user_id]
         );
         const otp_timelimit = new Date(checkOTP.rows[0].otp_timelimit);
         const now = new Date();
@@ -99,7 +103,8 @@ OTPController.validateOTP = async (req, res) => {
             await client.query(TRANS.BEGIN);
             try {
                 await client.query(
-                    `update otp_transaction set inserted = true where user_id = '${user_id}'`
+                    `update otp_transaction set inserted = true where user_id = $1`,
+                    [user_id]
                 );
                 await client.query(TRANS.COMMIT);
             } catch (error) {

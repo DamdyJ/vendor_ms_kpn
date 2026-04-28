@@ -1,6 +1,7 @@
 const mailer = require("nodemailer");
 const Email = require("../helper/generateemail");
 const EmailVerif = require("../helper/generateemailverif");
+const MaterialEmail = require("../helper/generateemailmaterial");
 const db = require("../config/connection");
 const fs = require("fs");
 const os = require("os");
@@ -104,13 +105,13 @@ const Emailer = {
                                 from
                                     ven_bank vb
                                 left join mst_bank_sap mb on
-                                    mb.id::varchar = vb.bank_id 
+                                    mb.id::varchar = vb.bank_id
                                 where vb.ven_id = $1`,
             [getVenDetail[0].ven_id]
         );
         const { rows: getFiles } = await client.query(
-            `select mft.file_type , vfa.file_name from ven_file_atth vfa 
-        left join mst_file_type mft on vfa.file_type = mft.file_code 
+            `select mft.file_type , vfa.file_name from ven_file_atth vfa
+        left join mst_file_type mft on vfa.file_type = mft.file_code
         where vfa.ven_id = $1`,
             [getVenDetail[0].ven_id]
         );
@@ -354,9 +355,9 @@ const Emailer = {
             );
             const { rows: procEmail } = await client.query(
                 `
-                select mu.email 
-                from ticket t  
-                left join mst_user mu on mu.user_id = t.proc_id 
+                select mu.email
+                from ticket t
+                left join mst_user mu on mu.user_id = t.proc_id
                  where t.token = $1`,
                 [ticket_token]
             );
@@ -482,13 +483,13 @@ const Emailer = {
                                         from
                                             ven_bank vb
                                         left join mst_bank_sap mb on
-                                            mb.id::varchar = vb.bank_id 
+                                            mb.id::varchar = vb.bank_id
                                         where vb.ven_id = $1`,
                     [ven_detail.ven_id]
                 );
                 const { rows: getFiles } = await client.query(
-                    `select mft.file_type , vfa.file_name from ven_file_atth vfa 
-                left join mst_file_type mft on vfa.file_type = mft.file_code 
+                    `select mft.file_type , vfa.file_name from ven_file_atth vfa
+                left join mst_file_type mft on vfa.file_type = mft.file_code
                 where vfa.ven_id = $1`,
                     [ven_detail.ven_id]
                 );
@@ -505,7 +506,7 @@ const Emailer = {
                                             user_group_name
                                         from
                                             mst_page_access mpa) mpa on
-                                        mm.user_group = mpa.user_group_id 
+                                        mm.user_group = mpa.user_group_id
                                     where mpa.user_group_name = '${role}';`);
                 const bankTable = getBanks.map(item => {
                     return `
@@ -638,6 +639,7 @@ const Emailer = {
                         v.lim_curr ,
                         v.limit_vendor ,
                         v.description,
+                        v.kawasan_berikat,
                         t.token
                     from
                         vendor v
@@ -655,8 +657,8 @@ const Emailer = {
                 );
                 const ven_detail = getVenDetail[0];
                 const { rows: getFiles } = await client.query(
-                    `select mft.file_type , vfa.file_name from ven_file_atth vfa 
-                left join mst_file_type mft on vfa.file_type = mft.file_code 
+                    `select mft.file_type , vfa.file_name from ven_file_atth vfa
+                left join mst_file_type mft on vfa.file_type = mft.file_code
                 where vfa.ven_id = $1 and vfa.file_type in ('A005', 'A006') `,
                     [detail.ven_id]
                 );
@@ -778,7 +780,7 @@ const Emailer = {
                                         from
                                             ven_bank vb
                                         left join mst_bank_sap mb on
-                                            mb.id::varchar = vb.bank_id 
+                                            mb.id::varchar = vb.bank_id
                                         where vb.ven_id = $1`,
                     [ven_id]
                 );
@@ -796,7 +798,7 @@ const Emailer = {
                         user_group_name
                     from
                         mst_page_access mpa) mpa on
-                    mm.user_group = mpa.user_group_id 
+                    mm.user_group = mpa.user_group_id
                 where mpa.user_group_name = 'MGRPRC';`);
 
                 const bankTable = getBanks.map(item => {
@@ -898,8 +900,8 @@ const Emailer = {
             try {
                 const { rows } = await client.query(
                     `
-                    select 
-                    trv.ticket_num, 
+                    select
+                    trv.ticket_num,
                     v.name_1,
                     concat(c.name, ' (', c.sap_code, ')') as company,
                     trv.request,
@@ -951,8 +953,8 @@ const Emailer = {
             try {
                 const { rows } = await client.query(
                     `
-                    select 
-                    trv.ticket_num, 
+                    select
+                    trv.ticket_num,
                     v.name_1,
                     concat(c.name, ' (', c.sap_code, ')') as company,
                     trv.request,
@@ -1067,6 +1069,43 @@ const Emailer = {
             return res;
         } catch (error) {
             console.error(error);
+        }
+    },
+
+    materialEditNotification: async (
+        materialEdits,
+        timeWindow,
+        hostname,
+        mdmMaterialEmails
+    ) => {
+        try {
+            const html = MaterialEmail.materialEditNotification(
+                materialEdits,
+                timeWindow,
+                hostname
+            );
+
+            if (!mdmMaterialEmails) {
+                throw new Error("MDM_MATERIAL emails are required");
+            }
+
+            const emailRecipients = mdmMaterialEmails
+                .split(",")
+                .map(email => email.trim())
+                .filter(email => email.length > 0);
+
+            const setup = {
+                from: process.env.SMTP_USERNAME,
+                to: emailRecipients,
+                subject: `Material Edit Notification - ${timeWindow} (${materialEdits.length} materials)`,
+                html: html,
+            };
+
+            const result = await tp.sendMail(setup);
+            return result;
+        } catch (error) {
+            console.error("Error sending material edit notification:", error);
+            throw error;
         }
     },
 };

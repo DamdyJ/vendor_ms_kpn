@@ -16,6 +16,7 @@ const prodSettings = {
     idleTimeoutMillis: 3000,
     connectionTimeoutMillis: 30000,
     allowExitOnIdle: true,
+    application_name: "VMS",
 };
 
 const devSettings = {
@@ -31,10 +32,16 @@ const devSettings = {
     ssl: {
         rejectUnauthorized: false,
     },
+    application_name: "VMS",
 };
 
 const pool = new Pool(
     process.env.NODE_ENV === "production" ? prodSettings : devSettings
 );
+
+// log unexpected errors on idle clients
+pool.on("error", (err, client) => {
+    console.error("Postgres pool idle client error:", err && err.message);
+});
 
 module.exports = pool;

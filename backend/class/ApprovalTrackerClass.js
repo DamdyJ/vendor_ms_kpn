@@ -74,6 +74,7 @@ class ApprovalTracker {
             let client = this.psqlclient;
             try {
                 let whereVal = [];
+                let whereque = [];
                 if (this.ticket_id) {
                     const { rows: ticket_data } = await client.query(
                         `select
@@ -91,77 +92,144 @@ class ApprovalTracker {
                     );
                     this.ticket = ticket_data[0];
                     whereVal.push(this.ticket.ticket_type);
+                    whereVal.push(this.ticket_id);
                 } else {
                     whereVal.push(this.doctype);
                 }
-                whereVal.push(this.ticket_id);
-                const que = `
-                select
-                    as2.id_doctype,
-                    as2.index_approval,
-                    as2.emp_role_id ,
-                    as2.bu_id ,
-                    as2.dept_id ,
-                    as2.disabled_input ,
-                    as2.enabled_input ,
-                    ao.on_submit_condition ,
-                    as2.def_submit_email_target,
-                    as2.def_reject_email_target,
-                    as2.def_submit_email,
-                    as2.def_reject_email, 
-                    as2.reject_action,
-                    as2.reject_next_index,
-                    as2.default_next_index,
-                     case
-                    	when as2.emp_role_id = 'STAFF' then mu.email
-                    	else au.email
-                    end as email,
-                    as2.is_onetime_appr,
-                    as2.wo_auth,
-                    cc_email.email as cc_email
-                from
-                    approval_steps as2
-                left join (
+                let que = "";
+                if (this.ticket_id) {
+                    que = `
                     select
-                        on_submit_id,
-                        array_agg(json_build_object('condition', condition, 'next_index', next_index, 'on_submit_email', on_submit_email, 'on_submit_target', on_submit_target)) as on_submit_condition
+                        as2.id_doctype,
+                        as2.index_approval,
+                        as2.emp_role_id ,
+                        as2.bu_id ,
+                        as2.dept_id ,
+                        as2.disabled_input ,
+                        as2.enabled_input ,
+                        ao.on_submit_condition ,
+                        as2.def_submit_email_target,
+                        as2.def_reject_email_target,
+                        as2.def_submit_email,
+                        as2.def_reject_email, 
+                        as2.reject_action,
+                        as2.reject_next_index,
+                        as2.default_next_index,
+                         case
+                            when as2.emp_role_id = 'STAFF' then mu.email
+                            else au.email
+                        end as email,
+                        as2.is_onetime_appr,
+                        as2.wo_auth,
+                        cc_email.email as cc_email
                     from
-                        approval_onsubmit ao
-                    group by
-                        on_submit_id) ao on
-                    ao.on_submit_id = as2.on_submit
-                left join (
+                        approval_steps as2
+                    left join (
+                        select
+                            on_submit_id,
+                            array_agg(json_build_object('condition', condition, 'next_index', next_index, 'on_submit_email', on_submit_email, 'on_submit_target', on_submit_target)) as on_submit_condition
+                        from
+                            approval_onsubmit ao
+                        group by
+                            on_submit_id) ao on
+                        ao.on_submit_id = as2.on_submit
+                    left join (
+                        select
+                            emp_role_id,
+                            bu_id,
+                            bu_id_1,
+                            bu_id_2,
+                            dept_id,
+                            string_agg(email,
+                            ',') as email
+                        from
+                            all_users au
+                        group by
+                            emp_role_id,
+                            bu_id,
+                            bu_id_1,
+                            bu_id_2,
+                            dept_id) au on
+                        au.emp_role_id = as2.emp_role_id
+                        and (au.bu_id = as2.bu_id or au.bu_id_1 = as2.bu_id or au.bu_id_2 = as2.bu_id)
+                        and au.dept_id = as2.dept_id
+                    left join(
+                        select ac.approval_doctype, ac.approval_pos, ac.bu_id, ac.dept_id, ac.emp_role_id, string_agg(email, ',') as email from mst_user mu
+                        left join approval_cc ac on ac.bu_id = mu.bu_id and ac.dept_id = mu.dept_id and ac.emp_role_id = mu.emp_role_id
+                        group by ac.approval_pos, ac.approval_doctype, ac.bu_id, ac.dept_id, ac.emp_role_id
+                    ) cc_email on as2.id_doctype = cc_email.approval_doctype and as2.index_approval = cc_email.approval_pos 
+                    left join ticket t on t.approval_type = as2.id_doctype 
+                    left join mst_user mu on mu.user_id = t.proc_id
+                    where
+                        id_doctype = $1 and t.token = $2
+                    order by
+                        index_approval
+                    `;
+                } else {
+                    que = `
                     select
-                        emp_role_id,
-                        bu_id,
-                        bu_id_1,
-                        bu_id_2,
-                        dept_id,
-                        string_agg(email,
-                        ',') as email
+                        as2.id_doctype,
+                        as2.index_approval,
+                        as2.emp_role_id ,
+                        as2.bu_id ,
+                        as2.dept_id ,
+                        as2.disabled_input ,
+                        as2.enabled_input ,
+                        ao.on_submit_condition ,
+                        as2.def_submit_email_target,
+                        as2.def_reject_email_target,
+                        as2.def_submit_email,
+                        as2.def_reject_email, 
+                        as2.reject_action,
+                        as2.reject_next_index,
+                        as2.default_next_index,
+                        au.email,
+                        as2.is_onetime_appr,
+                        as2.wo_auth,
+                        cc_email.email as cc_email
                     from
-                        all_users au
-                    group by
-                        emp_role_id,
-                        bu_id,
-                        bu_id_1,
-                        bu_id_2,
-                        dept_id) au on
-                    au.emp_role_id = as2.emp_role_id
-                    and (au.bu_id = as2.bu_id or au.bu_id_1 = as2.bu_id or au.bu_id_2 = as2.bu_id)
-                    and au.dept_id = as2.dept_id
-                left join(
-                	select ac.approval_doctype, ac.approval_pos, ac.bu_id, ac.dept_id, ac.emp_role_id, string_agg(email, ',') as email from mst_user mu
-                	left join approval_cc ac on ac.bu_id = mu.bu_id and ac.dept_id = mu.dept_id and ac.emp_role_id = mu.emp_role_id
-                	group by ac.approval_pos, ac.approval_doctype, ac.bu_id, ac.dept_id, ac.emp_role_id
-                ) cc_email on as2.id_doctype = cc_email.approval_doctype and as2.index_approval = cc_email.approval_pos 
-                left join ticket t on t.approval_type = as2.id_doctype 
-                left join mst_user mu on mu.user_id = t.proc_id
-                where
-                    id_doctype = $1 and t.token = $2
-                order by
-                    index_approval
-                `;
+                        approval_steps as2
+                    left join (
+                        select
+                            on_submit_id,
+                            array_agg(json_build_object('condition', condition, 'next_index', next_index, 'on_submit_email', on_submit_email, 'on_submit_target', on_submit_target)) as on_submit_condition
+                        from
+                            approval_onsubmit ao
+                        group by
+                            on_submit_id) ao on
+                        ao.on_submit_id = as2.on_submit
+                    left join (
+                        select
+                            emp_role_id,
+                            bu_id,
+                            bu_id_1,
+                            bu_id_2,
+                            dept_id,
+                            string_agg(email,
+                            ',') as email
+                        from
+                            all_users au
+                        group by
+                            emp_role_id,
+                            bu_id,
+                            bu_id_1,
+                            bu_id_2,
+                            dept_id) au on
+                        au.emp_role_id = as2.emp_role_id
+                        and (au.bu_id = as2.bu_id)
+                        and au.dept_id = as2.dept_id
+                    left join(
+                        select ac.approval_doctype, ac.approval_pos, ac.bu_id, ac.dept_id, ac.emp_role_id, string_agg(email, ',') as email from mst_user mu
+                        left join approval_cc ac on ac.bu_id = mu.bu_id and ac.dept_id = mu.dept_id and ac.emp_role_id = mu.emp_role_id
+                        group by ac.approval_pos, ac.approval_doctype, ac.bu_id, ac.dept_id, ac.emp_role_id
+                    ) cc_email on as2.id_doctype = cc_email.approval_doctype and as2.index_approval = cc_email.approval_pos 
+                    where
+                        id_doctype = $1 
+                    order by
+                        index_approval
+                    `;
+                }
+                console.log(que);
                 const { rows: approval_step_dt } = await client.query(
                     que,
                     whereVal

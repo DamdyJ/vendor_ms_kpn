@@ -88,6 +88,8 @@ EmailModel.GetDataDetailVendor = async (client, ticket_id) => {
                 v.is_priority,
                 t.token as ticket_id,
                 t.ticket_id as ticket_num,
+                v.kawasan_berikat,
+                v.is_interest,
                 case 
                     when tr.bu_id = 'CG' then 'CG'
                     else 'NON_CG'
@@ -135,6 +137,7 @@ EmailModel.GetDataDetailVendor = async (client, ticket_id) => {
  * @param {import("../class/ApprovalTrackerClass").approval_step} next_step
  * @param {Object} misc
  * @param {string|undefined} misc.token_appr
+ * @param {boolean} reminder
  */
 
 EmailModel.ProcessEmailGen = async (
@@ -143,7 +146,8 @@ EmailModel.ProcessEmailGen = async (
     ticket_id,
     client,
     next_step,
-    misc
+    misc,
+    reminder = false
 ) => {
     try {
         let detail_vendor = await EmailModel.GetDataDetailVendor(
@@ -180,7 +184,8 @@ EmailModel.ProcessEmailGen = async (
                     detail_vendor,
                     misc,
                     config,
-                    bu_type
+                    bu_type,
+                    reminder
                 );
                 break;
             case "Submit_CLevel":
@@ -190,7 +195,8 @@ EmailModel.ProcessEmailGen = async (
                     detail_vendor,
                     misc,
                     config,
-                    bu_type
+                    bu_type,
+                    reminder
                 );
                 break;
             case "Submit_MDM":
@@ -212,7 +218,8 @@ EmailModel.SendManager = async (
     detail_vendor,
     misc,
     config,
-    bu = "NON_CG"
+    bu = "NON_CG",
+    reminder
 ) => {
     try {
         let role_id = next_step.emp_role_id;
@@ -246,7 +253,7 @@ EmailModel.SendManager = async (
 
         const { rows: res_data_mgr } = await client.query(
             `
-                select * from mst_mgr where emp_role_id = $1 and (bu_id = $2 or bu_id_1 = $2 or bu_id_2 = $2) and dept_id = $3                
+                select * from mst_mgr where emp_role_id = $1 and (bu_id = $2 or bu_id_1 = $2 or bu_id_2 = $2) and dept_id = $3 and is_active = true               
                 `,
             [role_id, bu_id, dept_id]
         );
@@ -355,7 +362,11 @@ EmailModel.SendManager = async (
         let setup = {
             from: process.env.SMTP_USERNAME,
             ...config,
-            subject: `Vendor ${detail_vendor.name_1} ${emp_role_name} ${bu_name} ${dept_name} Approval Request (${detail_vendor.ticket_num})`,
+            subject: `${reminder ? "Reminder :" : ""}Vendor ${
+                detail_vendor.name_1
+            } ${emp_role_name} ${bu_name} ${dept_name} Approval Request (${
+                detail_vendor.ticket_num
+            })`,
             html: html_gen,
             attachments: fileAtth,
         };
@@ -371,7 +382,8 @@ EmailModel.SendCLevel = async (
     detail_vendor,
     misc,
     config,
-    bu = "NON_CG"
+    bu = "NON_CG",
+    reminder
 ) => {
     try {
         let role_id = next_step.emp_role_id;
@@ -398,7 +410,7 @@ EmailModel.SendCLevel = async (
 
         const { rows: res_data_mgr } = await client.query(
             `
-                select * from mst_mgr where emp_role_id = $1 and bu_id = $2 and dept_id = $3                
+                select * from mst_mgr where emp_role_id = $1 and bu_id = $2 and dept_id = $3 and is_active = true            
                 `,
             [role_id, bu_id, dept_id]
         );
@@ -423,11 +435,17 @@ EmailModel.SendCLevel = async (
         let openingState = "";
         if (detail_vendor?.is_tender && !detail_vendor?.is_priority) {
             openingState = "who have participated in the tender at KPN Corp";
+            if (detail_vendor?.is_interest) {
+                openingState =
+                    "who have participated in the tender at KPN Corp and prioritized in its interest payment";
+            }
         } else if (!detail_vendor?.is_tender && detail_vendor?.is_priority) {
             openingState = "which is priority vendor";
         } else if (detail_vendor?.is_tender && detail_vendor?.is_priority) {
             openingState =
                 "who have participated in the tender at KPN Corp also a priority vendor";
+        } else if (detail_vendor?.is_interest) {
+            openingState = "who prioritized in its interest payment";
         }
 
         let opening = `Dear ${title_mgr} ${res_data_mgr[0].fullname}, <br /> Please approve for vendor ${openingState} :`;
@@ -521,7 +539,11 @@ EmailModel.SendCLevel = async (
         let setup = {
             from: process.env.SMTP_USERNAME,
             ...config,
-            subject: `Vendor ${detail_vendor.name_1} ${emp_role_name} ${bu_name} Approval Request (${detail_vendor.ticket_num})`,
+            subject: `${reminder ? "Reminder :" : ""}Vendor ${
+                detail_vendor.name_1
+            } ${emp_role_name} ${bu_name} Approval Request (${
+                detail_vendor.ticket_num
+            })`,
             html: html_gen,
             attachments: fileAtth,
         };
@@ -612,4 +634,60 @@ EmailModel.EndTicket = async (ven_name, ven_code, config) => {
         throw error;
     }
 };
+
+EmailModel.coupaEmail = async (client, ven_detail, ven_banks) => {
+    try {
+        const { rows } = await client.query(`
+            SELECT email
+            FROM mst_mgr
+            WHERE emp_role_id = 'C_LEVEL'
+            AND is_active = true
+            LIMIT 1
+        `);
+
+        if (!rows.length) {
+            throw new Error("C-Level email not found");
+        }
+
+        const to = rows[0].email;
+
+        const config = {
+            to,
+            cc: process.env.COUPA_EMAIL_CC,
+        };
+
+        const banks_html = await Promise.all(
+            ven_banks.map(async bank => {
+                const { rows } = await client.query(
+                    `SELECT bank_name FROM mst_bank_sap WHERE id::varchar = $1`,
+                    [bank.bank_id]
+                );
+                const bank_name = rows[0]?.bank_name ?? bank.bank_id;
+                return `
+                <tr>
+                    <td>${bank.bank_country ?? ""}</td>
+                    <td>${bank_name}</td>
+                    <td>${bank.bank_curr ?? ""}</td>
+                    <td>${bank.bank_acc ?? ""}</td>
+                    <td>${bank.acc_hold ?? ""}</td>
+                </tr>
+                `;
+            })
+        );
+
+        const html_gen = EmailGen.Submit_Coupa(ven_detail, banks_html);
+        const setup = {
+            from: process.env.SMTP_USERNAME,
+            ...config,
+            subject: `Information Coupa Vendor ${ven_detail.name_1}`,
+            html: html_gen,
+        };
+
+        await tp.sendMail(setup);
+        return { skipped: false };
+    } catch (error) {
+        throw error;
+    }
+};
+
 module.exports = EmailModel;

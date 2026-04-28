@@ -10,6 +10,12 @@ router.get("/newform/:id", controller.getTicketById); // get ticket by id ;
 router.post("/form/submit", AuthToken.authSession, controller.submitTicketv2);
 router.post("/newform/submit", controller.submitTicketv2);
 router.post("/form/submitv2", AuthToken.authSession, controller.submitTicketv2);
+//reminder email approval
+router.post(
+    "/reminderappr",
+    AuthToken.authSession,
+    controller.ReminderApproval
+);
 router.post("/form/v1/submit", controller.singleSubmit);
 router.get("/", AuthToken.authSession, controller.ShowAllv2);
 router.patch("/reject", AuthToken.authSession, controller.RejectTicketv2);

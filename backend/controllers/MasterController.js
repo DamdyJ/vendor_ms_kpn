@@ -190,12 +190,13 @@ const MasterController = {
 
     getFileType: async (req, res) => {
         try {
-            const { title, ventype, bu_id, curpos } = req.query;
+            const { title, ventype, bu_id, curpos, trade } = req.query;
             const result = await Master.GetFileType({
                 title,
                 ventype,
                 bu_id,
                 curpos,
+                trade,
             });
             res.status(200).send({ data: result });
         } catch (error) {
@@ -452,6 +453,21 @@ const MasterController = {
             res.status(200).send({
                 data: data,
             });
+        } catch (error) {
+            console.error(error);
+            res.status(500).send({
+                message: error.message,
+            });
+        }
+    },
+
+    GetBuAndDeptCombi: async (req, res) => {
+        try {
+            const result = await Master.GetExistedDeptofBU();
+            res.status(200).send({
+                data: result,
+            });
+            return;
         } catch (error) {
             console.error(error);
             res.status(500).send({

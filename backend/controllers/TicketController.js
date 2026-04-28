@@ -9,6 +9,7 @@ const fa = require("speakeasy");
 const path = require("path");
 const jwt = require("jsonwebtoken");
 const { isAxiosError } = require("axios");
+const MutexModel = require("../models/MutexModel");
 
 const TicketController = {};
 
@@ -223,9 +224,14 @@ TicketController.submitTicket = async (req, res) => {
 };
 
 TicketController.submitTicketv2 = async (req, res) => {
+    const { ticket_id, ven_detail, ven_banks, ven_files, is_draft } = req.body;
     try {
-        const { ticket_id, ven_detail, ven_banks, ven_files, is_draft } =
-            req.body;
+        //lock transaction
+        const user_id = req?.cookies?.user_id;
+        if (!user_id) {
+            user_id - "UNKNOWN";
+        }
+        await MutexModel.CreateLock(ticket_id, user_id);
         const data = await Ticket.submitVendorv2({
             ticket_id,
             session: req.cookies,
@@ -244,6 +250,8 @@ TicketController.submitTicketv2 = async (req, res) => {
         res.status(500).send({
             message,
         });
+    } finally {
+        await MutexModel.Unlock(ticket_id);
     }
 };
 
@@ -263,6 +271,21 @@ TicketController.submitVendor = async (req, res) => {
         console.error(err);
         res.status(500).send({
             message: "Failed create ticket",
+        });
+    }
+};
+
+TicketController.ReminderApproval = async (req, res) => {
+    try {
+        const { ticket_id } = req.body;
+        const reminderEmail = await Ticket.reminderApprovalEmail(ticket_id);
+        res.status(200).send({
+            message: "Reminder Sent",
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(200).send({
+            message: error.message,
         });
     }
 };
@@ -331,11 +354,14 @@ TicketController.RejectTicketv2 = async (req, res) => {
     const { remarks, ticket_id } = req.body;
     const session = req.cookies;
     try {
+        await MutexModel.CreateLock(ticket_id, session.user_id);
         const result = await Ticket.RejectTicketv2(ticket_id, remarks, session);
         res.status(200).send(result);
     } catch (error) {
         console.error(error);
         res.status(500).send({ message: error.message });
+    } finally {
+        await MutexModel.Unlock(ticket_id);
     }
 };
 
@@ -436,6 +462,7 @@ TicketController.rejectMgrv2 = async (req, res) => {
 TicketController.RejectMgrbyLink = async (req, res) => {
     const { reason, token } = req.body;
     const decoded = jwt.decode(token, process.env.TOKEN_KEY);
+    await MutexModel.CreateLock(decoded.ticket_id);
     const getCurrentSession = await Ticket.getSessionApprbyLink(
         decoded.ticket_id
     );
@@ -454,6 +481,8 @@ TicketController.RejectMgrbyLink = async (req, res) => {
         res.status(500).send({
             message: error.message,
         });
+    } finally {
+        await MutexModel.Unlock(decoded.ticket_id);
     }
 };
 

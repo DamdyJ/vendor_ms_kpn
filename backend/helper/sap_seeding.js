@@ -109,7 +109,7 @@ const saveToDatabase = async (item, pool) => {
                       material_sub_group_id = EXCLUDED.material_sub_group_id,
                       updated_by = EXCLUDED.updated_by,
                       updated_at = EXCLUDED.updated_at,
-                      dffromclient = EXCLUDED.dffromclient,
+                      dffromclient = EXCLUDED.dffromclient
                   RETURNING code, (xmax = 0) AS was_inserted`,
                 [
                     item.MATNR,
