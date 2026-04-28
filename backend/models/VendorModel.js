@@ -2203,6 +2203,49 @@ const Vendor = {
         }
     },
 
+    async allVerified(type) {
+        const client = await db.connect();
+        try {
+            let query = `
+            select 
+                v.ven_id as vendor_id,
+                v.ven_code as vendor_code,
+                v.name_1 as vendor_name,
+                v.email,
+                v.is_active,
+                v.ven_acc as vendor_account,
+                v.ven_type as vendor_type,
+                trim(concat_ws(' ',
+                    v.street,
+                    v.street2,
+                    v.street3,
+                    v.street4
+                )) as street_address
+            from vendor v
+            where v.is_pushsap = true
+        `;
+
+            const values = [];
+
+            if (type) {
+                values.push(type.toLowerCase());
+                query += ` and lower(v.ven_type) = $${values.length}`;
+            }
+
+            const result = await client.query(query, values);
+
+            return {
+                count: result.rowCount,
+                data: result.rows,
+            };
+        } catch (err) {
+            console.error("error fetching verified vendors:", err);
+            throw err;
+        } finally {
+            client.release();
+        }
+    },
+
     // async UpdateVendorData(ticket_id, updated_data) {
     //     try {
     //         const client = await db.connect() ;
