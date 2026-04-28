@@ -2203,43 +2203,6 @@ const Vendor = {
         }
     },
 
-    async allVerified() {
-        const client = await db.connect();
-        try {
-            const query = `
-           SELECT 
-    v.ven_id AS vendor_id,
-    v.ven_code AS vendor_code,
-    v.name_1 AS vendor_name,
-    v.email,
-    v.is_active,
-    v.ven_acc AS vendor_account,
-    v.ven_type AS vendor_type,
-    TRIM(CONCAT_WS(' ',
-        v.street,
-        v.street2,
-        v.street3,
-        v.street4
-    )) AS street_address
-FROM vendor v
-WHERE 
-    is_verif = 1
-    AND is_pushsap = TRUE;
-                    `;
-
-            const result = await client.query(query);
-            return {
-                count: result.rowCount,
-                data: result.rows,
-            };
-        } catch (err) {
-            console.error("Error fetching verified vendors:", err);
-            throw err;
-        } finally {
-            client.release();
-        }
-    },
-
     // async UpdateVendorData(ticket_id, updated_data) {
     //     try {
     //         const client = await db.connect() ;
