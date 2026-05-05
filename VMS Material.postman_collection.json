@@ -1,810 +1,1087 @@
 {
-	"info": {
-		"_postman_id": "3f02600d-d749-4902-93d5-afd024aa860f",
-		"name": "VMS Material",
-		"description": "All Material endpoints for VMS.\n\n**Usage Instructions:**\n- Set the `baseUrl` variable to your API base (default: http://localhost:3001/api/material).\n- Set the `accessToken` variable after login.\n- All requests will use the Authorization header automatically.\n- If a request returns 403, the collection will auto-refresh the token and retry the request.\n- The refresh endpoint is POST {{baseUrl}}/../user/refresh-token with Authorization: Bearer <expired_token>.\n- If refresh fails, re-login to get a new accessToken.\n",
-		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
-		"_exporter_id": "40065133"
-	},
-	"item": [
-		{
-			"name": "Auth",
-			"item": [
-				{
-					"name": "Login",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"if (pm.response.code === 200 && pm.response.json().accessToken) {",
-									"    pm.collectionVariables.set('accessToken', pm.response.json().accessToken);",
-									"    console.log('accessToken set!');",
-									"} else {",
-									"    console.log('Login failed or accessToken not found in response.');",
-									"}"
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"username\": \"ADMIN\",\n  \"password\": \"ADMIN\"\n}"
-						},
-						"url": "{{url}}/user/login",
-						"description": "Login to obtain accessToken. Replace with your credentials."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Groups",
-			"item": [
-				{
-					"name": "Get All Material Groups",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/groups?page=1&pageSize=10&q=",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"groups"
-							],
-							"query": [
-								{
-									"key": "page",
-									"value": "1"
-								},
-								{
-									"key": "pageSize",
-									"value": "10"
-								},
-								{
-									"key": "q",
-									"value": ""
-								}
-							]
-						},
-						"description": "Get paginated list of material groups. Optional search with 'q'."
-					},
-					"response": []
-				},
-				{
-					"name": "Get All Material Groups (Dropdown)",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": "{{baseUrl}}/groups/dropdown",
-						"description": "Get all material groups for dropdown (no pagination)."
-					},
-					"response": []
-				},
-				{
-					"name": "Create Material Group",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"code\": \"9001\",\n  \"name\": \"Group Name\"\n}"
-						},
-						"url": "{{baseUrl}}/material/groups",
-						"description": "Create a new material group. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Update Material Group",
-					"request": {
-						"method": "PUT",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"code\": \"9001\",\n  \"name\": \"Updated Group Name\"\n}"
-						},
-						"url": {
-							"raw": "{{baseUrl}}/material/groups/:groupId",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"groups",
-								":groupId"
-							],
-							"variable": [
-								{
-									"key": "groupId"
-								}
-							]
-						},
-						"description": "Update a material group by groupId. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Delete Material Group",
-					"request": {
-						"method": "DELETE",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/groups/:groupId",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"groups",
-								":groupId"
-							],
-							"variable": [
-								{
-									"key": "groupId"
-								}
-							]
-						},
-						"description": "Delete a material group by groupId. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Import Material Groups from Excel",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "multipart/form-data"
-							}
-						],
-						"body": {
-							"mode": "formdata",
-							"formdata": [
-								{
-									"key": "file",
-									"value": "",
-									"type": "file"
-								}
-							]
-						},
-						"url": "{{baseUrl}}/material/groups/import",
-						"description": "Import only groups from Excel file. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Export Only Groups to Excel",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": "{{baseUrl}}/material/groups/export/only",
-						"description": "Export only groups to Excel. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Get Subgroups by Group ID",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/groups/:groupId/subgroups",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"groups",
-								":groupId",
-								"subgroups"
-							],
-							"variable": [
-								{
-									"key": "groupId"
-								}
-							]
-						},
-						"description": "Get subgroups by groupId."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Subgroups",
-			"item": [
-				{
-					"name": "Get All Subgroups for Group (Dropdown)",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/subgroups/:groupId/dropdown",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"subgroups",
-								":groupId",
-								"dropdown"
-							],
-							"variable": [
-								{
-									"key": "groupId"
-								}
-							]
-						},
-						"description": "Get all subgroups for a group (no pagination). Replace :groupId with actual group ID."
-					},
-					"response": []
-				},
-				{
-					"name": "Create Material Subgroup",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"code\": \"01\",\n  \"name\": \"Subgroup Name\",\n  \"item_group_id\": 1\n}"
-						},
-						"url": "{{baseUrl}}/material/subgroups",
-						"description": "Create a new material subgroup. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Update Material Subgroup",
-					"request": {
-						"method": "PUT",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"code\": \"01\",\n  \"name\": \"Updated Subgroup Name\",\n  \"item_group_id\": 1\n}"
-						},
-						"url": {
-							"raw": "{{baseUrl}}/material/subgroups/:subGroupId",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"subgroups",
-								":subGroupId"
-							],
-							"variable": [
-								{
-									"key": "subGroupId"
-								}
-							]
-						},
-						"description": "Update a material subgroup by subGroupId. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Delete Material Subgroup",
-					"request": {
-						"method": "DELETE",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/subgroups/:subGroupId",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"subgroups",
-								":subGroupId"
-							],
-							"variable": [
-								{
-									"key": "subGroupId"
-								}
-							]
-						},
-						"description": "Delete a material subgroup by subGroupId. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Import Material Subgroups from Excel",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "multipart/form-data"
-							}
-						],
-						"body": {
-							"mode": "formdata",
-							"formdata": [
-								{
-									"key": "file",
-									"value": "",
-									"type": "file"
-								}
-							]
-						},
-						"url": "{{baseUrl}}/material/subgroups/import",
-						"description": "Import only subgroups from Excel file. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Export Only Subgroups to Excel",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/subgroups/export/:groupId",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"subgroups",
-								"export",
-								":groupId"
-							],
-							"variable": [
-								{
-									"key": "groupId"
-								}
-							]
-						},
-						"description": "Export only subgroups to Excel for a group. Requires authentication. Replace :groupId with actual group ID."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Materials/Items",
-			"item": [
-				{
-					"name": "Get Materials by Group ID",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/groups/:groupId/materials",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"groups",
-								":groupId",
-								"materials"
-							],
-							"variable": [
-								{
-									"key": "groupId"
-								}
-							]
-						},
-						"description": "Get materials by groupId."
-					},
-					"response": []
-				},
-				{
-					"name": "Get Materials by Subgroup ID",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/subgroups/:subGroupId/materials",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"subgroups",
-								":subGroupId",
-								"materials"
-							],
-							"variable": [
-								{
-									"key": "subGroupId"
-								}
-							]
-						},
-						"description": "Get materials by subGroupId."
-					},
-					"response": []
-				},
-				{
-					"name": "Search Materials",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/search?q=term&page=1&pageSize=10",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"search"
-							],
-							"query": [
-								{
-									"key": "q",
-									"value": "term"
-								},
-								{
-									"key": "page",
-									"value": "1"
-								},
-								{
-									"key": "pageSize",
-									"value": "10"
-								}
-							]
-						},
-						"description": "Search materials by term."
-					},
-					"response": []
-				},
-				{
-					"name": "Get Material by ID (with Attachments)",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/:materialId",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								":materialId"
-							],
-							"variable": [
-								{
-									"key": "materialId"
-								}
-							]
-						},
-						"description": "Get material by materialId with full details and attachments."
-					},
-					"response": []
-				},
-				{
-					"name": "Update Material Aliases",
-					"request": {
-						"method": "PUT",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"alias1\": \"Alias 1\",\n  \"alias2\": \"Alias 2\",\n  \"alias3\": \"Alias 3\"\n}"
-						},
-						"url": {
-							"raw": "{{baseUrl}}/material/:materialId/aliases",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								":materialId",
-								"aliases"
-							],
-							"variable": [
-								{
-									"key": "materialId"
-								}
-							]
-						},
-						"description": "Update aliases for a material. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "SAP Data Synchronization (Sync SAP)",
-					"request": {
-						"method": "POST",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/sync-sap?startDate=20240101&endDate=20250101&fieldName=LAEDA",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"sync-sap"
-							],
-							"query": [
-								{
-									"key": "startDate",
-									"value": "20240101"
-								},
-								{
-									"key": "endDate",
-									"value": "20250101"
-								},
-								{
-									"key": "fieldName",
-									"value": "LAEDA"
-								}
-							]
-						},
-						"description": "Trigger SAP data synchronization for a date range and field. Requires authentication."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Attachments",
-			"item": [
-				{
-					"name": "Get Attachments by Material Codes",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"codes\": [\"9001.01.01\", \"9002.01.01\"]\n}"
-						},
-						"url": "{{baseUrl}}/material/by-codes",
-						"description": "Get attachments for materials by array of codes."
-					},
-					"response": []
-				},
-				{
-					"name": "Get Attachments by Material ID",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/:materialId/attachments",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								":materialId",
-								"attachments"
-							],
-							"variable": [
-								{
-									"key": "materialId"
-								}
-							]
-						},
-						"description": "Get attachments for a material by materialId."
-					},
-					"response": []
-				},
-				{
-					"name": "Upload Attachment for Material",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "multipart/form-data"
-							}
-						],
-						"body": {
-							"mode": "formdata",
-							"formdata": [
-								{
-									"key": "files",
-									"value": "",
-									"type": "file"
-								}
-							]
-						},
-						"url": {
-							"raw": "{{baseUrl}}/material/:materialId/attachments",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								":materialId",
-								"attachments"
-							],
-							"variable": [
-								{
-									"key": "materialId"
-								}
-							]
-						},
-						"description": "Upload attachment(s) for a material. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Delete Attachment",
-					"request": {
-						"method": "DELETE",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/attachments/:attachmentId",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"attachments",
-								":attachmentId"
-							],
-							"variable": [
-								{
-									"key": "attachmentId"
-								}
-							]
-						},
-						"description": "Delete an attachment by attachmentId. Requires authentication."
-					},
-					"response": []
-				},
-				{
-					"name": "Serve Attachment File",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/material/file/:filename",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"material",
-								"file",
-								":filename"
-							],
-							"variable": [
-								{
-									"key": "filename"
-								}
-							]
-						},
-						"description": "Serve/download an attachment file by filename."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "SAP Sync",
-			"item": [
-				{
-					"name": "SAP Data Synchronization (Sync SAP)",
-					"request": {
-						"method": "POST",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/sync-sap?startDate=20240101&endDate=20250101&fieldName=LAEDA",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"sync-sap"
-							],
-							"query": [
-								{
-									"key": "startDate",
-									"value": "20240101"
-								},
-								{
-									"key": "endDate",
-									"value": "20250101"
-								},
-								{
-									"key": "fieldName",
-									"value": "LAEDA"
-								}
-							]
-						},
-						"description": "Trigger SAP data synchronization for a date range and field. Requires authentication."
-					},
-					"response": []
-				}
-			]
-		}
-	],
-	"event": [
-		{
-			"listen": "prerequest",
-			"script": {
-				"type": "text/javascript",
-				"exec": [
-					"if (pm.collectionVariables.get('accessToken')) {",
-					"    pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + pm.collectionVariables.get('accessToken') });",
-					"}"
-				]
-			}
-		},
-		{
-			"listen": "test",
-			"script": {
-				"type": "text/javascript",
-				"exec": [
-					"if (pm.response.code === 403) {",
-					"    const originalRequest = pm.request.clone();",
-					"    pm.sendRequest({",
-					"        url: pm.collectionVariables.get('baseUrl').replace('/material','') + '/user/refresh-token',",
-					"        method: 'POST',",
-					"        header: { 'Authorization': 'Bearer ' + pm.collectionVariables.get('accessToken') }",
-					"    }, function (err, res) {",
-					"        if (!err && res.code === 200 && res.json().accessToken) {",
-					"            pm.collectionVariables.set('accessToken', res.json().accessToken);",
-					"            // Retry the original request with new token",
-					"            originalRequest.headers.upsert({ key: 'Authorization', value: 'Bearer ' + res.json().accessToken });",
-					"            pm.sendRequest(originalRequest, function (err2, res2) {",
-					"                // Optionally, you can log or process res2 here",
-					"            });",
-					"        } else {",
-					"            pm.collectionVariables.set('accessToken', '');",
-					"            console.log('Refresh failed. Please re-login.');",
-					"        }",
-					"    });",
-					"}"
-				]
-			}
-		}
-	],
-	"variable": [
-		{
-			"key": "baseUrl",
-			"value": "https://localhost:3001/api/material"
-		},
-		{
-			"key": "accessToken",
-			"value": ""
-		},
-		{
-			"key": "url",
-			"value": "https://localhost:3001",
-			"type": "string"
-		}
-	]
+  "info": {
+    "_postman_id": "3f02600d-d749-4902-93d5-afd024aa860f",
+    "name": "VMS Material",
+    "description": "All Material endpoints for VMS.\n\n**Usage Instructions:**\n- Set the `baseUrl` variable to your API base (default: http://localhost:3001/api/material).\n- Set the `accessToken` variable after login.\n- All requests will use the Authorization header automatically.\n- If a request returns 403, the collection will auto-refresh the token and retry the request.\n- The refresh endpoint is POST {{baseUrl}}/../user/refresh-token with Authorization: Bearer <expired_token>.\n- If refresh fails, re-login to get a new accessToken.\n",
+    "schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
+    "_exporter_id": "40065133"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200 && pm.response.json().accessToken) {",
+                  "    pm.collectionVariables.set('accessToken', pm.response.json().accessToken);",
+                  "    console.log('accessToken set!');",
+                  "} else {",
+                  "    console.log('Login failed or accessToken not found in response.');",
+                  "}"
+                ],
+                "type": "text/javascript",
+                "packages": {}
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"ADMIN\",\n  \"password\": \"ADMIN\"\n}"
+            },
+            "url": "{{url}}/user/login",
+            "description": "Login to obtain accessToken. Replace with your credentials."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Groups",
+      "item": [
+        {
+          "name": "Get All Material Groups",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/groups?page=1&pageSize=10&q=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "groups"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "10"
+                },
+                {
+                  "key": "q",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Get paginated list of material groups. Optional search with 'q'."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Material Groups (Dropdown)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/groups/dropdown",
+            "description": "Get all material groups for dropdown (no pagination)."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Material Group",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"9001\",\n  \"name\": \"Group Name\"\n}"
+            },
+            "url": "{{baseUrl}}/material/groups",
+            "description": "Create a new material group. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Material Group",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"9001\",\n  \"name\": \"Updated Group Name\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/material/groups/:groupId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "groups",
+                ":groupId"
+              ],
+              "variable": [
+                {
+                  "key": "groupId"
+                }
+              ]
+            },
+            "description": "Update a material group by groupId. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Material Group",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/groups/:groupId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "groups",
+                ":groupId"
+              ],
+              "variable": [
+                {
+                  "key": "groupId"
+                }
+              ]
+            },
+            "description": "Delete a material group by groupId. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Import Material Groups from Excel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "value": "",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/material/groups/import",
+            "description": "Import only groups from Excel file. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Export Only Groups to Excel",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/material/groups/export/only",
+            "description": "Export only groups to Excel. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Subgroups by Group ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/groups/:groupId/subgroups",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "groups",
+                ":groupId",
+                "subgroups"
+              ],
+              "variable": [
+                {
+                  "key": "groupId"
+                }
+              ]
+            },
+            "description": "Get subgroups by groupId."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Subgroups",
+      "item": [
+        {
+          "name": "Get All Subgroups for Group (Dropdown)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/subgroups/:groupId/dropdown",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "subgroups",
+                ":groupId",
+                "dropdown"
+              ],
+              "variable": [
+                {
+                  "key": "groupId"
+                }
+              ]
+            },
+            "description": "Get all subgroups for a group (no pagination). Replace :groupId with actual group ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Material Subgroup",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"01\",\n  \"name\": \"Subgroup Name\",\n  \"item_group_id\": 1\n}"
+            },
+            "url": "{{baseUrl}}/material/subgroups",
+            "description": "Create a new material subgroup. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Material Subgroup",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"01\",\n  \"name\": \"Updated Subgroup Name\",\n  \"item_group_id\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/material/subgroups/:subGroupId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "subgroups",
+                ":subGroupId"
+              ],
+              "variable": [
+                {
+                  "key": "subGroupId"
+                }
+              ]
+            },
+            "description": "Update a material subgroup by subGroupId. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Material Subgroup",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/subgroups/:subGroupId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "subgroups",
+                ":subGroupId"
+              ],
+              "variable": [
+                {
+                  "key": "subGroupId"
+                }
+              ]
+            },
+            "description": "Delete a material subgroup by subGroupId. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Import Material Subgroups from Excel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "value": "",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/material/subgroups/import",
+            "description": "Import only subgroups from Excel file. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Export Only Subgroups to Excel",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/subgroups/export/:groupId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "subgroups",
+                "export",
+                ":groupId"
+              ],
+              "variable": [
+                {
+                  "key": "groupId"
+                }
+              ]
+            },
+            "description": "Export only subgroups to Excel for a group. Requires authentication. Replace :groupId with actual group ID."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Materials/Items",
+      "item": [
+        {
+          "name": "Get Materials by Group ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/groups/:groupId/materials",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "groups",
+                ":groupId",
+                "materials"
+              ],
+              "variable": [
+                {
+                  "key": "groupId"
+                }
+              ]
+            },
+            "description": "Get materials by groupId."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Materials by Subgroup ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/subgroups/:subGroupId/materials",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "subgroups",
+                ":subGroupId",
+                "materials"
+              ],
+              "variable": [
+                {
+                  "key": "subGroupId"
+                }
+              ]
+            },
+            "description": "Get materials by subGroupId."
+          },
+          "response": []
+        },
+        {
+          "name": "Search Materials",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/search?q=term&page=1&pageSize=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "term"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Search materials by term."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Material by ID (with Attachments)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/:materialId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                ":materialId"
+              ],
+              "variable": [
+                {
+                  "key": "materialId"
+                }
+              ]
+            },
+            "description": "Get material by materialId with full details and attachments."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Material Aliases",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"alias1\": \"Alias 1\",\n  \"alias2\": \"Alias 2\",\n  \"alias3\": \"Alias 3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/material/:materialId/aliases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                ":materialId",
+                "aliases"
+              ],
+              "variable": [
+                {
+                  "key": "materialId"
+                }
+              ]
+            },
+            "description": "Update aliases for a material. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "SAP Data Synchronization (Sync SAP)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/sync-sap?startDate=20240101&endDate=20250101&fieldName=LAEDA",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync-sap"
+              ],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "20240101"
+                },
+                {
+                  "key": "endDate",
+                  "value": "20250101"
+                },
+                {
+                  "key": "fieldName",
+                  "value": "LAEDA"
+                }
+              ]
+            },
+            "description": "Trigger SAP data synchronization for a date range and field. Requires authentication."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Attachments",
+      "item": [
+        {
+          "name": "Get Attachments by Material Codes",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"codes\": [\n    \"9001.01.01\",\n    \"9002.01.01\"\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/material/by-codes",
+            "description": "Get attachments for materials by array of codes."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Attachments by Material ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/:materialId/attachments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                ":materialId",
+                "attachments"
+              ],
+              "variable": [
+                {
+                  "key": "materialId"
+                }
+              ]
+            },
+            "description": "Get attachments for a material by materialId."
+          },
+          "response": []
+        },
+        {
+          "name": "Upload Attachment for Material",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "files",
+                  "value": "",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/material/:materialId/attachments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                ":materialId",
+                "attachments"
+              ],
+              "variable": [
+                {
+                  "key": "materialId"
+                }
+              ]
+            },
+            "description": "Upload attachment(s) for a material. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Attachment",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/attachments/:attachmentId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "attachments",
+                ":attachmentId"
+              ],
+              "variable": [
+                {
+                  "key": "attachmentId"
+                }
+              ]
+            },
+            "description": "Delete an attachment by attachmentId. Requires authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Serve Attachment File",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material/file/:filename",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material",
+                "file",
+                ":filename"
+              ],
+              "variable": [
+                {
+                  "key": "filename"
+                }
+              ]
+            },
+            "description": "Serve/download an attachment file by filename."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "SAP Sync",
+      "item": [
+        {
+          "name": "SAP Data Synchronization (Sync SAP)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/sync-sap?startDate=20240101&endDate=20250101&fieldName=LAEDA",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync-sap"
+              ],
+              "query": [
+                {
+                  "key": "startDate",
+                  "value": "20240101"
+                },
+                {
+                  "key": "endDate",
+                  "value": "20250101"
+                },
+                {
+                  "key": "fieldName",
+                  "value": "LAEDA"
+                }
+              ]
+            },
+            "description": "Trigger SAP data synchronization for a date range and field. Requires authentication."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Material Templates",
+      "item": [
+        {
+          "name": "Get Material Templates",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/templates",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "templates"
+              ]
+            },
+            "description": "Ambil daftar semua template material yang tersedia."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Material Template By Group - Mechanical",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/groups/{{materialGroupCode}}/template",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "groups",
+                "{{materialGroupCode}}",
+                "template"
+              ]
+            },
+            "description": "Ambil detail template berdasarkan material group. Default contoh: 905."
+          },
+          "response": []
+        },
+        {
+          "name": "Preview Material Template Description - Mechanical",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"templateValues\": {\n    \"part_number\": \"P/N 1\",\n    \"material_name\": \"GASKET\",\n    \"type_bentuk\": \"SW\",\n    \"size_dimension\": \"2IN\",\n    \"material_spec_bahan\": \"STEEL\",\n    \"model\": \"SWG\",\n    \"brand_merek\": \"KPN\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/groups/{{materialGroupCode}}/template-description-previews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "groups",
+                "{{materialGroupCode}}",
+                "template-description-previews"
+              ]
+            },
+            "description": "Preview Material Description hasil template tanpa validate seluruh request field."
+          },
+          "response": []
+        },
+        {
+          "name": "Validate Material Template - Mechanical",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"materialGroupCode\": \"{{materialGroupCode}}\",\n  \"requestFields\": {\n    \"material_type\": \"ZROH\",\n    \"material_group\": \"905\",\n    \"base_unit_of_measure\": \"EA\",\n    \"plant\": \"KPN1\",\n    \"batch_management\": true,\n    \"batch_management_plant\": true,\n    \"profit_center\": \"PC1000\",\n    \"storage_location\": \"SL01\",\n    \"sales_organization\": \"SO01\",\n    \"distribution_channel\": \"10\",\n    \"valuation_class\": \"3000\",\n    \"valuation_class_project_stock\": \"3001\"\n  },\n  \"templateValues\": {\n    \"part_number\": \"P/N 1\",\n    \"material_name\": \"GASKET\",\n    \"type_bentuk\": \"SW\",\n    \"size_dimension\": \"2IN\",\n    \"material_spec_bahan\": \"STEEL\",\n    \"model\": \"SWG\",\n    \"brand_merek\": \"KPN\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/template-validations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "template-validations"
+              ]
+            },
+            "description": "Validate request field + template field untuk contoh Mechanical Component."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Material Suggestions By Group",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material-suggestions?q={{searchQuery}}&materialGroupCode={{materialGroupCode}}&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material-suggestions"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "{{searchQuery}}"
+                },
+                {
+                  "key": "materialGroupCode",
+                  "value": "{{materialGroupCode}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Cari material existing dari mat_sap_data dengan filter material group."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Material Template By Group - Electrical",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/groups/{{electricalMaterialGroupCode}}/template",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "groups",
+                "{{electricalMaterialGroupCode}}",
+                "template"
+              ]
+            },
+            "description": "Ambil detail template berdasarkan material group. Default contoh: 909."
+          },
+          "response": []
+        },
+        {
+          "name": "Preview Material Template Description - Electrical",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"templateValues\": {\n    \"part_number\": \"P/N E\",\n    \"material_name\": \"C\",\n    \"type_bentuk\": \"M\",\n    \"size_dimension\": \"3P\",\n    \"phase\": \"3\",\n    \"ampere\": \"25\",\n    \"volt\": \"380\",\n    \"hz\": \"50\",\n    \"range\": \"S\",\n    \"model\": \"LC\",\n    \"brand_merek\": \"SD\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/groups/{{electricalMaterialGroupCode}}/template-description-previews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "groups",
+                "{{electricalMaterialGroupCode}}",
+                "template-description-previews"
+              ]
+            },
+            "description": "Preview Material Description untuk contoh Electrical Component."
+          },
+          "response": []
+        },
+        {
+          "name": "Validate Material Template - Electrical",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"materialGroupCode\": \"{{electricalMaterialGroupCode}}\",\n  \"requestFields\": {\n    \"material_type\": \"ZROH\",\n    \"material_group\": \"909\",\n    \"base_unit_of_measure\": \"EA\",\n    \"plant\": \"KPN1\",\n    \"batch_management\": true,\n    \"batch_management_plant\": true,\n    \"profit_center\": \"PC1000\",\n    \"storage_location\": \"SL01\",\n    \"sales_organization\": \"SO01\",\n    \"distribution_channel\": \"10\",\n    \"valuation_class\": \"3000\",\n    \"valuation_class_project_stock\": \"3001\"\n  },\n  \"templateValues\": {\n    \"part_number\": \"P/N E\",\n    \"material_name\": \"C\",\n    \"type_bentuk\": \"M\",\n    \"size_dimension\": \"3P\",\n    \"phase\": \"3\",\n    \"ampere\": \"25\",\n    \"volt\": \"380\",\n    \"hz\": \"50\",\n    \"range\": \"S\",\n    \"model\": \"LC\",\n    \"brand_merek\": \"SD\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/template-validations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "template-validations"
+              ]
+            },
+            "description": "Validate request field + template field untuk contoh Electrical Component."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Material Suggestions - Global",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/material-suggestions?q={{searchQuery}}&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "material-suggestions"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "{{searchQuery}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Cari material existing tanpa filter material group."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Validate Material Template - Max 40 Fails",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"materialGroupCode\": \"{{materialGroupCode}}\",\n  \"requestFields\": {\n    \"material_type\": \"ZROH\",\n    \"material_group\": \"905\",\n    \"base_unit_of_measure\": \"EA\",\n    \"plant\": \"KPN1\",\n    \"batch_management\": true,\n    \"batch_management_plant\": true,\n    \"profit_center\": \"PC1000\",\n    \"storage_location\": \"SL01\",\n    \"sales_organization\": \"SO01\",\n    \"distribution_channel\": \"10\",\n    \"valuation_class\": \"3000\",\n    \"valuation_class_project_stock\": \"3001\"\n  },\n  \"templateValues\": {\n    \"part_number\": \"P/N 1234567890\",\n    \"material_name\": \"GASKET\",\n    \"type_bentuk\": \"SPIRAL\",\n    \"size_dimension\": \"2IN\",\n    \"material_spec_bahan\": \"STEEL\",\n    \"model\": \"MODEL\",\n    \"brand_merek\": \"KPN\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/template-validations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "template-validations"
+          ]
+        },
+        "description": "Negative test: generated Material Description harus gagal bila lebih dari 40 karakter."
+      },
+      "response": []
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.collectionVariables.get('accessToken')) {",
+          "    pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + pm.collectionVariables.get('accessToken') });",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.response.code === 403) {",
+          "    const originalRequest = pm.request.clone();",
+          "    pm.sendRequest({",
+          "        url: pm.collectionVariables.get('baseUrl').replace('/material','') + '/user/refresh-token',",
+          "        method: 'POST',",
+          "        header: { 'Authorization': 'Bearer ' + pm.collectionVariables.get('accessToken') }",
+          "    }, function (err, res) {",
+          "        if (!err && res.code === 200 && res.json().accessToken) {",
+          "            pm.collectionVariables.set('accessToken', res.json().accessToken);",
+          "            // Retry the original request with new token",
+          "            originalRequest.headers.upsert({ key: 'Authorization', value: 'Bearer ' + res.json().accessToken });",
+          "            pm.sendRequest(originalRequest, function (err2, res2) {",
+          "                // Optionally, you can log or process res2 here",
+          "            });",
+          "        } else {",
+          "            pm.collectionVariables.set('accessToken', '');",
+          "            console.log('Refresh failed. Please re-login.');",
+          "        }",
+          "    });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://localhost:3001/api/material"
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "url",
+      "value": "https://localhost:3001",
+      "type": "string"
+    },
+    {
+      "key": "materialGroupCode",
+      "value": "905",
+      "type": "string"
+    },
+    {
+      "key": "electricalMaterialGroupCode",
+      "value": "909",
+      "type": "string"
+    },
+    {
+      "key": "searchQuery",
+      "value": "GASKET",
+      "type": "string"
+    }
+  ]
 }

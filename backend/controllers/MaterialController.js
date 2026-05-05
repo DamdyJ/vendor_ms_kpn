@@ -1,4 +1,5 @@
 const Material = require("../models/MaterialModel");
+const MaterialTemplate = require("../models/MaterialTemplateModel");
 const formidable = require("formidable");
 const fs = require("fs");
 const path = require("path");
@@ -620,10 +621,16 @@ const MaterialController = {
     // Search materials
     searchMaterials: async (req, res) => {
         try {
-            const { q } = req.query;
+            const { q, groupId } = req.query;
             let sorting_state = [];
             Object.keys(req.query).map(key => {
-                if (key == "q" || key == "pageSize" || key == "page") return;
+                if (
+                    key == "q" ||
+                    key == "pageSize" ||
+                    key == "page" ||
+                    key == "groupId"
+                )
+                    return;
                 sorting_state.push({ col: key, state: req.query[key] });
             });
 
@@ -636,7 +643,8 @@ const MaterialController = {
                 searchTerm,
                 page,
                 pageSize,
-                sorting_state
+                sorting_state,
+                groupId
             );
 
             res.status(200).json({
@@ -916,11 +924,7 @@ const MaterialController = {
     serveFile: async (req, res) => {
         try {
             const filename = req.params.filename;
-            const filepath = path.join(
-                path.resolve(),
-                "./backend/public",
-                filename
-            );
+            const filepath = path.join(path.resolve(), "public", filename);
 
             // Check if file exists
             if (!fs.existsSync(filepath)) {
@@ -1060,6 +1064,211 @@ const MaterialController = {
         }
     },
 
+    getMaterialTemplates: async (req, res) => {
+        try {
+            const templates = await MaterialTemplate.getMaterialTemplates();
+            return res.status(200).json({
+                success: true,
+                message: "Material templates fetched successfully",
+                data: templates,
+            });
+        } catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to fetch material templates",
+                error: error.message,
+            });
+        }
+    },
+
+    getMaterialTemplateByGroup: async (req, res) => {
+        try {
+            const { materialGroupCode } = req.params;
+            const materialTemplate =
+                await MaterialTemplate.getMaterialTemplateByGroupCode(
+                    materialGroupCode
+                );
+
+            return res.status(200).json({
+                success: true,
+                message: "Material template fetched successfully",
+                data: materialTemplate,
+            });
+        } catch (error) {
+            const statusCode =
+                error.message &&
+                error.message.includes("Material template tidak ditemukan")
+                    ? 404
+                    : 500;
+
+            return res.status(statusCode).json({
+                success: false,
+                message: "Failed to fetch material template",
+                error: error.message,
+            });
+        }
+    },
+
+    getMaterialFormSchemaByGroup: async (req, res) => {
+        try {
+            const { materialGroupCode } = req.params;
+            const formSchema =
+                await MaterialTemplate.getMaterialFormSchemaByGroupCode(
+                    materialGroupCode
+                );
+
+            return res.status(200).json({
+                success: true,
+                message: "Material form schema fetched successfully",
+                data: formSchema,
+            });
+        } catch (error) {
+            const statusCode =
+                error.message &&
+                (error.message.includes("Material template tidak ditemukan") ||
+                    error.message.includes("Material group tidak ditemukan"))
+                    ? 404
+                    : 500;
+
+            return res.status(statusCode).json({
+                success: false,
+                message: "Failed to fetch material form schema",
+                error: error.message,
+            });
+        }
+    },
+
+    previewMaterialTemplateDescription: async (req, res) => {
+        try {
+            const { materialGroupCode: materialGroupCodeParam } = req.params;
+            const {
+                materialGroupCode = materialGroupCodeParam,
+                templateValues = {},
+            } = req.body || {};
+
+            if (!materialGroupCode) {
+                return res.status(400).json({
+                    success: false,
+                    message: "materialGroupCode is required",
+                });
+            }
+
+            const preview =
+                await MaterialTemplate.previewMaterialTemplateDescription(
+                    materialGroupCode,
+                    templateValues
+                );
+
+            return res.status(200).json({
+                success: true,
+                message: "Material description preview generated successfully",
+                data: preview,
+            });
+        } catch (error) {
+            const statusCode =
+                error.message &&
+                error.message.includes("Material template tidak ditemukan")
+                    ? 404
+                    : 500;
+
+            return res.status(statusCode).json({
+                success: false,
+                message: "Failed to generate material description preview",
+                error: error.message,
+            });
+        }
+    },
+
+    validateMaterialTemplate: async (req, res) => {
+        try {
+            const {
+                materialGroupCode,
+                requestFields = {},
+                templateValues = {},
+            } = req.body || {};
+
+            if (!materialGroupCode) {
+                return res.status(400).json({
+                    success: false,
+                    message: "materialGroupCode is required",
+                });
+            }
+
+            const validation =
+                await MaterialTemplate.validateMaterialRequestTemplate({
+                    materialGroupCode,
+                    requestFields,
+                    templateValues,
+                });
+
+            return res.status(200).json({
+                success: true,
+                message: "Material template validated successfully",
+                data: validation,
+            });
+        } catch (error) {
+            const statusCode =
+                error.message &&
+                error.message.includes("Material template tidak ditemukan")
+                    ? 404
+                    : 500;
+
+            return res.status(statusCode).json({
+                success: false,
+                message: "Failed to validate material template",
+                error: error.message,
+            });
+        }
+    },
+
+    searchMaterialTemplateSuggestions: async (req, res) => {
+        try {
+            const { q = "", materialGroupCode = null, limit = 10 } = req.query;
+            const suggestions =
+                await MaterialTemplate.searchMaterialTemplateSuggestions({
+                    query: q,
+                    materialGroupCode,
+                    limit,
+                });
+
+            return res.status(200).json({
+                success: true,
+                message: "Material suggestions fetched successfully",
+                data: suggestions,
+            });
+        } catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to fetch material suggestions",
+                error: error.message,
+            });
+        }
+    },
+
+    getSearchSuggestions: async (req, res) => {
+        try {
+            const { q = "", materialGroupCode = null, limit = 10 } = req.query;
+            const suggestions = await Material.getSearchSuggestions({
+                query: q,
+                materialGroupCode,
+                limit,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: "Material suggestions fetched successfully",
+                data: suggestions,
+            });
+        } catch (error) {
+            console.error("Error in getSearchSuggestions:", error);
+            return res.status(500).json({
+                success: false,
+                message: "Failed to fetch material suggestions",
+                error: error.message,
+            });
+        }
+    },
+
     // Export materials to Excel (filtered by group/subgroup or search query)
     exportMaterialsToExcel: async (req, res) => {
         try {
@@ -1151,6 +1360,22 @@ const MaterialController = {
                 message,
                 error: error.message,
             });
+        }
+    },
+    
+    getInitialScreenData: async (req, res) => {
+        try {
+            const [locations, types] = await Promise.all([
+                Material.getLocationAndPlant(),
+                Material.getMaterialTypes(),
+            ]);
+
+            res.status(200).json({
+                success: true,
+                data: { locations, types },
+            });
+        } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
         }
     },
 };

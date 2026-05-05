@@ -2,8 +2,12 @@ const express = require("express");
 const router = express.Router();
 const MaterialController = require("../controllers/MaterialController");
 const AuthToken = require("../middleware/tokenmanager");
+
 // Get all material groups
 router.get("/groups", MaterialController.getMaterialGroups);
+
+// Get initial screen data (Plant, Sloc, Material Type)
+router.get("/initial-screen-data", MaterialController.getInitialScreenData);
 
 // Get all material groups for dropdown (no pagination)
 router.get("/groups/dropdown", MaterialController.getAllMaterialGroups);
@@ -96,6 +100,9 @@ router.get(
 // Search materials (query parameter: ?q=searchTerm)
 router.get("/search", MaterialController.searchMaterials);
 
+// Get search suggestions (query parameter: ?q=searchTerm)
+router.get("/suggestions", MaterialController.getSearchSuggestions);
+
 // Search all materials (including deleted)
 router.get("/search/all", MaterialController.searchAllMaterials);
 
@@ -131,6 +138,29 @@ router.get("/file/:filename", MaterialController.serveFile);
 
 // SAP data synchronization endpoint
 router.get("/sync-sap", AuthToken.authSession, MaterialController.syncSAPData);
+
+// Material template endpoints
+router.get("/templates", MaterialController.getMaterialTemplates);
+router.get(
+    "/material-suggestions",
+    MaterialController.searchMaterialTemplateSuggestions
+);
+router.post(
+    "/template-validations",
+    MaterialController.validateMaterialTemplate
+);
+router.post(
+    "/groups/:materialGroupCode/template-description-previews",
+    MaterialController.previewMaterialTemplateDescription
+);
+router.get(
+    "/groups/:materialGroupCode/form-schema",
+    MaterialController.getMaterialFormSchemaByGroup
+);
+router.get(
+    "/groups/:materialGroupCode/template",
+    MaterialController.getMaterialTemplateByGroup
+);
 
 // Export materials to Excel (filtered by group/subgroup)
 router.get(
