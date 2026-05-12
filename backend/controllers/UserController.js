@@ -6,6 +6,31 @@ const crud = require("../helper/crudquery");
 const { hashPassword } = require("../middleware/hashpass");
 const PageModel = require("../models/PageModel");
 
+const getReadableError = err => {
+    const rawMessage =
+        err?.message || err?.stack || (typeof err === "string" ? err : null);
+    const code = err?.code;
+    const message = rawMessage || "Internal server error";
+
+    if (
+        [
+            "ECONNRESET",
+            "ECONNREFUSED",
+            "ETIMEDOUT",
+            "EHOSTUNREACH",
+            "EACCES",
+        ].includes(code) ||
+        message.includes("ECONNRESET") ||
+        message.includes("ETIMEDOUT") ||
+        message.includes("EHOSTUNREACH") ||
+        message.includes("EACCES")
+    ) {
+        return "Database connection failed. Check office network or VPN access, then verify the PostgreSQL host is reachable.";
+    }
+
+    return message;
+};
+
 const UserController = {
     showAll: async (req, res) => {
         try {
@@ -43,7 +68,7 @@ const UserController = {
         } catch (err) {
             console.log(err);
             res.status(500).send({
-                message: err,
+                message: getReadableError(err),
             });
         }
     },

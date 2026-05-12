@@ -5,14 +5,36 @@ const path = require("path");
 const DBClientWrapper = require("../helper/DBClientWrapper.js");
 const getMimeType = require("../helper/mimetype.js");
 const xlsx = require("xlsx");
-const toTsQuery = require("../helper/tsQuery.js");
 const axios = require("axios");
 const pool = require("../config/connection");
 const wmsPool = require("../config/wmsconnection");
 const saveToDatabase = require("../helper/sap_seeding");
-const getCodeSortClause = require("../helper/sort.js");
 const Emailer = require("../models/EmailModel.js");
 const TRANS = require("../config/transaction.js");
+const {
+    MDM_MATERIAL_GROUP_NAME,
+    buildInitialSingleRequestApproval,
+} = require("../helper/singleRequestApproval.js");
+
+const getRandomMdmMaterialUser = async client => {
+    const result = await client.query(
+        `SELECT
+            mu.user_id,
+            mu.fullname,
+            mu.username,
+            mu.email
+        FROM mst_user mu
+        JOIN mst_page_access mpa
+            ON mpa.user_group_id = mu.user_group
+        WHERE mpa.user_group_name = $1
+            AND mu.is_active = true
+        ORDER BY random()
+        LIMIT 1`,
+        [MDM_MATERIAL_GROUP_NAME]
+    );
+
+    return result.rows[0] || null;
+};
 
 const Material = {
     // Create a new material group
@@ -909,8 +931,12 @@ const Material = {
                     const colMap = {
                         CODE: "m.code",
                         NAME: "m.name",
+                        CREATED_BY: "m.created_by",
                         CREATED_AT: "m.created_at",
+                        GROUPNAME: "mig.name",
                         UPDATED_AT: "m.updated_at",
+                        STATUS: "m.dffromclient",
+                        UNIT_OF_MEASUREMENT: "m.unit_of_measurement",
                         FULLCODE: "m.code",
                         GROUPCODE: "mig.code",
                         SUBGROUPCODE: "mis.code",
@@ -1313,14 +1339,15 @@ const Material = {
                 const params = [ilikeQuery];
 
                 whereClause += ` AND (
-                    m.code ILIKE $1 
-                    OR m.name ILIKE $1 
-                    OR m.description ILIKE $1 
-                    OR m.long_text ILIKE $1
-                    OR m.alias1 ILIKE $1 
-                    OR m.alias2 ILIKE $1 
-                    OR m.alias3 ILIKE $1
-                )`;
+                     m.code ILIKE $1 
+                     OR m.name ILIKE $1 
+                     OR m.description ILIKE $1 
+                     OR m.long_text ILIKE $1
+                     OR COALESCE(m.unit_of_measurement, '') ILIKE $1
+                     OR m.alias1 ILIKE $1 
+                     OR m.alias2 ILIKE $1 
+                     OR m.alias3 ILIKE $1
+                 )`;
 
                 if (materialGroupCode) {
                     whereClause += " AND mig.code = $2";
@@ -1333,6 +1360,9 @@ const Material = {
                         m.code,
                         m.name,
                         m.description,
+                        m.alias1,
+                        m.alias2,
+                        m.alias3,
                         m.unit_of_measurement,
                         CASE
                             WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
@@ -2619,7 +2649,15 @@ const Material = {
         try {
             return await DBClientWrapper(async client => {
                 const res = await client.query(
-                    "SELECT id, deleted_at FROM mat_item_sub_group WHERE id = $1",
+                    `SELECT
+                        mis.id,
+                        mis.code AS subgroup_code,
+                        mis.deleted_at,
+                        mis.item_group_id,
+                        mig.code AS group_code
+                    FROM mat_item_sub_group mis
+                    JOIN mat_item_group mig ON mig.id = mis.item_group_id
+                    WHERE mis.id = $1`,
                     [subGroupId]
                 );
                 return res.rows[0] || null;
@@ -2743,6 +2781,340 @@ const Material = {
             return result.rows;
         } catch (error) {
             console.error("Error fetching material types:", error);
+            throw error;
+        }
+    },
+
+    getRandomMdmMaterialUser: async () => {
+        try {
+            return await DBClientWrapper(async client => {
+                return getRandomMdmMaterialUser(client);
+            });
+        } catch (error) {
+            console.error("Error fetching random MDM material user:", error);
+            throw error;
+        }
+    },
+
+    assignSingleRequestApproval3FromMdm: async ({ requestId }) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const mdmUser = await getRandomMdmMaterialUser(client);
+
+                    if (!mdmUser) {
+                        const error = new Error(
+                            "No active MDM_MATERIAL user found"
+                        );
+                        error.statusCode = 404;
+                        throw error;
+                    }
+
+                    const approvalResult = await client.query(
+                        `UPDATE mat_single_request_approval
+                        SET approval_3_user_id = $2,
+                            approval_3_status = COALESCE(approval_3_status, 'WAITING'),
+                            updated_at = NOW()
+                        WHERE request_id = $1
+                            AND approval_1_status = 'APPROVED'
+                            AND approval_2_status = 'APPROVED'
+                        RETURNING
+                            request_id,
+                            requester_user_id,
+                            approval_1_status,
+                            approval_2_status,
+                            approval_3_user_id,
+                            approval_3_status`,
+                        [requestId, mdmUser.user_id]
+                    );
+
+                    if (approvalResult.rows.length === 0) {
+                        const error = new Error(
+                            "Approval 3 can only be assigned after Approval 1 and Approval 2 are approved"
+                        );
+                        error.statusCode = 400;
+                        throw error;
+                    }
+
+                    await client.query(
+                        `UPDATE mat_single_request
+                        SET assigned_to = 'Approval 3',
+                            updated_at = NOW()
+                        WHERE id = $1`,
+                        [requestId]
+                    );
+
+                    await client.query("COMMIT");
+
+                    return {
+                        ...approvalResult.rows[0],
+                        mdm_user: mdmUser,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error(
+                "Error assigning approval 3 from MDM material:",
+                error
+            );
+            throw error;
+        }
+    },
+
+    createSingleRequest: async ({
+        materialGroupCode,
+        materialSubGroupId,
+        requestFields = {},
+        templateValues = {},
+        attachments = [],
+        createdBy,
+    }) => {
+        const savedFiles = [];
+
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const {
+                        rows: [{ next_id: nextId }],
+                    } = await client.query(
+                        "SELECT nextval(pg_get_serial_sequence('mat_single_request', 'id')) AS next_id"
+                    );
+
+                    const requestNo = String(1000000000 + Number(nextId));
+                    const payload = JSON.stringify({
+                        requestFields,
+                        templateValues,
+                    });
+
+                    const insertResult = await client.query(
+                        `INSERT INTO mat_single_request (
+                            id,
+                            request_no,
+                            ticket_type,
+                            material_group_code,
+                            material_sub_group_id,
+                            plant_code,
+                            sloc_code,
+                            material_description,
+                            base_uom,
+                            long_text_1,
+                            long_text_2,
+                            long_text_3,
+                            template_payload,
+                            status,
+                            assigned_to,
+                            created_by,
+                            created_at,
+                            updated_at
+                        ) VALUES (
+                            $1, $2, 'Create', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Submit', 'Approval 1', $13, NOW(), NOW()
+                        )
+                        RETURNING id, request_no, ticket_type, material_description, base_uom, status, assigned_to, created_by, created_at`,
+                        [
+                            nextId,
+                            requestNo,
+                            materialGroupCode,
+                            materialSubGroupId || null,
+                            requestFields.plant || null,
+                            requestFields.storage_location || null,
+                            requestFields.material_description,
+                            requestFields.base_unit_of_measure ||
+                                requestFields.base_uom,
+                            requestFields.long_text_1 || null,
+                            requestFields.long_text_2 || null,
+                            requestFields.long_text_3 || null,
+                            payload,
+                            createdBy,
+                        ]
+                    );
+
+                    const initialApproval = buildInitialSingleRequestApproval({
+                        requestId: nextId,
+                        requesterUserId: createdBy,
+                    });
+
+                    const approvalResult = await client.query(
+                        `INSERT INTO mat_single_request_approval (
+                            request_id,
+                            requester_user_id,
+                            approval_1_status,
+                            created_at,
+                            updated_at
+                        ) VALUES ($1, $2, $3, NOW(), NOW())
+                        ON CONFLICT (request_id) DO UPDATE SET
+                            requester_user_id = EXCLUDED.requester_user_id,
+                            approval_1_status = COALESCE(
+                                mat_single_request_approval.approval_1_status,
+                                EXCLUDED.approval_1_status
+                            ),
+                            updated_at = NOW()
+                        RETURNING request_id, requester_user_id, approval_1_status`,
+                        [
+                            initialApproval.request_id,
+                            initialApproval.requester_user_id,
+                            initialApproval.approval_1_status,
+                        ]
+                    );
+
+                    for (const file of attachments) {
+                        await client.query(
+                            `INSERT INTO mat_single_request_attachment (
+                                request_id,
+                                file_name,
+                                file_path,
+                                file_type,
+                                created_at
+                            ) VALUES ($1, $2, $3, $4, NOW())`,
+                            [
+                                nextId,
+                                file.originalName,
+                                file.relativePath,
+                                file.mimeType,
+                            ]
+                        );
+                    }
+
+                    const publicDir = path.join(
+                        path.resolve(),
+                        "./backend/public"
+                    );
+
+                    for (const file of attachments) {
+                        const finalPath = path.join(
+                            publicDir,
+                            file.relativePath
+                        );
+                        const finalDir = path.dirname(finalPath);
+
+                        if (!fs.existsSync(finalDir)) {
+                            fs.mkdirSync(finalDir, { recursive: true });
+                        }
+
+                        const rawData = fs.readFileSync(file.tempPath);
+                        fs.writeFileSync(finalPath, rawData);
+                        savedFiles.push(finalPath);
+                    }
+
+                    await client.query("COMMIT");
+
+                    return {
+                        ...insertResult.rows[0],
+                        attachments: attachments.map(file => ({
+                            file_name: file.originalName,
+                            file_path: file.relativePath,
+                            file_type: file.mimeType,
+                        })),
+                        approval: approvalResult.rows[0],
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            for (const savedFile of savedFiles) {
+                if (fs.existsSync(savedFile)) {
+                    fs.unlinkSync(savedFile);
+                }
+            }
+
+            console.error("Error creating single material request:", error);
+            throw error;
+        }
+    },
+
+    getSingleRequestsByUser: async createdBy => {
+        try {
+            return await DBClientWrapper(async client => {
+                const result = await client.query(
+                    `SELECT
+                        r.id,
+                        r.request_no AS ticket_number,
+                        r.ticket_type,
+                        r.material_group_code,
+                        mig.name AS material_group_name,
+                        r.material_sub_group_id,
+                        mis.code AS material_sub_group_code,
+                        mis.name AS material_sub_group_name,
+                        r.plant_code,
+                        r.sloc_code,
+                        r.material_description,
+                        r.base_uom AS uom,
+                        r.long_text_1,
+                        r.long_text_2,
+                        r.long_text_3,
+                        r.template_payload,
+                        r.status,
+                        a.requester_user_id,
+                        a.approval_1_user_id,
+                        a.approval_1_status,
+                        TO_CHAR(a.approval_1_at, 'YYYY-MM-DD HH24:MI') AS approval_1_at,
+                        a.approval_1_remark,
+                        a.approval_2_user_id,
+                        a.approval_2_status,
+                        TO_CHAR(a.approval_2_at, 'YYYY-MM-DD HH24:MI') AS approval_2_at,
+                        a.approval_2_remark,
+                        a.approval_3_status,
+                        a.approval_3_user_id,
+                        TO_CHAR(a.approval_3_at, 'YYYY-MM-DD HH24:MI') AS approval_3_at,
+                        a.approval_3_remark,
+                        COALESCE(u.username, r.created_by) AS created_by,
+                        TO_CHAR(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
+                        r.assigned_to,
+                        COALESCE(
+                            jsonb_agg(
+                                jsonb_build_object(
+                                    'id', att.id,
+                                    'file_name', att.file_name,
+                                    'file_path', att.file_path,
+                                    'file_type', att.file_type
+                                )
+                                ORDER BY att.id
+                            ) FILTER (WHERE att.id IS NOT NULL),
+                            '[]'::jsonb
+                        ) AS attachments
+                    FROM mat_single_request r
+                    LEFT JOIN mat_single_request_approval a
+                        ON a.request_id = r.id
+                    LEFT JOIN mst_user u ON u.user_id = r.created_by
+                    LEFT JOIN mat_item_group mig ON mig.code = r.material_group_code
+                    LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
+                    LEFT JOIN mat_single_request_attachment att ON att.request_id = r.id
+                    WHERE r.created_by = $1
+                    GROUP BY
+                        r.id,
+                        mig.name,
+                        mis.code,
+                        mis.name,
+                        a.requester_user_id,
+                        a.approval_1_user_id,
+                        a.approval_1_status,
+                        a.approval_1_at,
+                        a.approval_1_remark,
+                        a.approval_2_user_id,
+                        a.approval_2_status,
+                        a.approval_2_at,
+                        a.approval_2_remark,
+                        a.approval_3_user_id,
+                        a.approval_3_status,
+                        a.approval_3_at,
+                        a.approval_3_remark,
+                        u.username
+                    ORDER BY r.created_at DESC, r.id DESC`,
+                    [createdBy]
+                );
+
+                return result.rows;
+            });
+        } catch (error) {
+            console.error("Error fetching single requests by user:", error);
             throw error;
         }
     },

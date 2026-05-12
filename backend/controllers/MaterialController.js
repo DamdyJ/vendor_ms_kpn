@@ -3,10 +3,147 @@ const MaterialTemplate = require("../models/MaterialTemplateModel");
 const formidable = require("formidable");
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
-const axios = require("axios");
-const pool = require("../config/connection");
-const saveToDatabase = require("../helper/sap_seeding");
+const getMimeType = require("../helper/mimetype");
+
+const MATERIAL_FILE_DIRECTORIES = [
+    path.join(path.resolve(), "backend", "public"),
+    path.join(path.resolve(), "public"),
+];
+const SINGLE_REQUEST_FILE_EXTENSIONS = [
+    "pdf",
+    "doc",
+    "docx",
+    "png",
+    "jpg",
+    "jpeg",
+];
+const MAX_SINGLE_REQUEST_ATTACHMENTS = 3;
+
+const resolveMaterialFilePath = filename =>
+    MATERIAL_FILE_DIRECTORIES.map(directory =>
+        path.join(directory, filename)
+    ).find(filepath => fs.existsSync(filepath));
+
+const toFieldValue = value => (Array.isArray(value) ? value[0] : value);
+
+const parseJsonField = value => {
+    const normalized = toFieldValue(value);
+    if (!normalized) {
+        return {};
+    }
+
+    if (typeof normalized === "object") {
+        return normalized;
+    }
+
+    return JSON.parse(normalized);
+};
+
+const cleanupTempFiles = filepaths => {
+    for (const filepath of filepaths) {
+        if (!filepath) {
+            continue;
+        }
+
+        try {
+            if (fs.existsSync(filepath)) {
+                fs.unlinkSync(filepath);
+            }
+        } catch (error) {
+            console.error("Failed to clean up temp upload:", error);
+        }
+    }
+};
+
+const sanitizeUploadName = filename => {
+    const safeOriginalName = path.basename(String(filename || ""));
+    const extensionWithDot = path.extname(safeOriginalName);
+    const extension = extensionWithDot.replace(".", "").toLowerCase();
+    const baseName = path
+        .basename(safeOriginalName, extensionWithDot)
+        .replace(/[^A-Za-z0-9._-]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+
+    return {
+        extension,
+        safeOriginalName: safeOriginalName || "attachment",
+        safeBaseName: baseName || "attachment",
+    };
+};
+
+const sanitizePathSegment = value =>
+    String(value || "")
+        .trim()
+        .replace(/[^A-Za-z0-9._-]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "") || "unknown";
+
+const REQUEST_FIELD_ALIASES = {
+    base_uom: "base_unit_of_measure",
+    materialType: "material_type",
+    materialGroup: "material_group",
+    storageLocation: "storage_location",
+};
+
+const SINGLE_REQUEST_NON_FORM_FIELD_KEYS = new Set([
+    "profit_center",
+    "sales_organization",
+    "distribution_channel",
+    "valuation_class",
+    "valuation_class_project_stock",
+]);
+
+const normalizeRequestFields = payload => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return {};
+    }
+
+    const normalized = { ...payload };
+
+    for (const [legacyKey, canonicalKey] of Object.entries(
+        REQUEST_FIELD_ALIASES
+    )) {
+        if (
+            normalized[canonicalKey] === undefined &&
+            normalized[legacyKey] !== undefined
+        ) {
+            normalized[canonicalKey] = normalized[legacyKey];
+        }
+    }
+
+    return normalized;
+};
+
+const withMaterialTemplateAliases = payload => {
+    if (!payload || typeof payload !== "object") {
+        return payload;
+    }
+
+    return {
+        ...payload,
+        material_description:
+            payload.material_description ?? payload.materialDescription ?? null,
+        full_description:
+            payload.full_description ?? payload.fullDescription ?? null,
+        exceeds_material_description_limit:
+            payload.exceeds_material_description_limit ??
+            payload.exceedsMaterialDescriptionLimit ??
+            false,
+        normalized_request_fields:
+            payload.normalized_request_fields ??
+            payload.normalizedRequestFields ??
+            null,
+        normalized_template_values:
+            payload.normalized_template_values ??
+            payload.normalizedTemplateValues ??
+            null,
+        duplicate_suggestions:
+            payload.duplicate_suggestions ?? payload.duplicateSuggestions ?? [],
+        request_field_rules:
+            payload.request_field_rules ?? payload.requestFieldRules ?? [],
+    };
+};
 
 const MaterialController = {
     // Create a new material group
@@ -621,18 +758,28 @@ const MaterialController = {
     // Search materials
     searchMaterials: async (req, res) => {
         try {
-            const { q, groupId } = req.query;
+            const { q, groupId, sortBy, sortOrder } = req.query;
             let sorting_state = [];
+            const reservedQueryKeys = new Set([
+                "q",
+                "pageSize",
+                "page",
+                "groupId",
+                "sortBy",
+                "sortOrder",
+            ]);
+
             Object.keys(req.query).map(key => {
-                if (
-                    key == "q" ||
-                    key == "pageSize" ||
-                    key == "page" ||
-                    key == "groupId"
-                )
-                    return;
+                if (reservedQueryKeys.has(key)) return;
                 sorting_state.push({ col: key, state: req.query[key] });
             });
+
+            if (sortBy) {
+                sorting_state.unshift({
+                    col: sortBy,
+                    state: sortOrder || "asc",
+                });
+            }
 
             const page = parseInt(req.query.page) || 1;
             const pageSize = parseInt(req.query.pageSize) || 10;
@@ -924,10 +1071,10 @@ const MaterialController = {
     serveFile: async (req, res) => {
         try {
             const filename = req.params.filename;
-            const filepath = path.join(path.resolve(), "public", filename);
+            const filepath = resolveMaterialFilePath(filename);
 
             // Check if file exists
-            if (!fs.existsSync(filepath)) {
+            if (!filepath) {
                 return res.status(404).json({
                     success: false,
                     message: "File not found",
@@ -1162,7 +1309,7 @@ const MaterialController = {
             return res.status(200).json({
                 success: true,
                 message: "Material description preview generated successfully",
-                data: preview,
+                data: withMaterialTemplateAliases(preview),
             });
         } catch (error) {
             const statusCode =
@@ -1204,7 +1351,7 @@ const MaterialController = {
             return res.status(200).json({
                 success: true,
                 message: "Material template validated successfully",
-                data: validation,
+                data: withMaterialTemplateAliases(validation),
             });
         } catch (error) {
             const statusCode =
@@ -1216,6 +1363,216 @@ const MaterialController = {
             return res.status(statusCode).json({
                 success: false,
                 message: "Failed to validate material template",
+                error: error.message,
+            });
+        }
+    },
+
+    createSingleRequest: async (req, res) => {
+        let tempFilePaths = [];
+
+        try {
+            const userId = req.cookies.user_id;
+            const form = new formidable.IncomingForm();
+            form.options.multiples = true;
+            form.options.maxFileSize = 5 * 1024 * 1024;
+
+            const [fields, items] = await form.parse(req);
+            const materialGroupCode = String(
+                toFieldValue(fields.materialGroupCode) || ""
+            ).trim();
+            const subgroupValue = toFieldValue(fields.subgroup);
+            const materialSubGroupId = Number.parseInt(subgroupValue, 10);
+            const requestFields = normalizeRequestFields(
+                parseJsonField(fields.requestFields)
+            );
+            const templateValues = parseJsonField(fields.templateValues);
+            const rawFiles = items.files || items.file || [];
+            const files = (
+                Array.isArray(rawFiles) ? rawFiles : [rawFiles]
+            ).filter(Boolean);
+            tempFilePaths = files.map(file => file.filepath).filter(Boolean);
+
+            if (!userId) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Unauthorized",
+                });
+            }
+
+            if (!materialGroupCode) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Material group is required",
+                });
+            }
+
+            if (!Number.isInteger(materialSubGroupId)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Sub material group is required",
+                });
+            }
+
+            if (files.length === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Minimum 1 attachment is required",
+                });
+            }
+
+            if (files.length > MAX_SINGLE_REQUEST_ATTACHMENTS) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Maximum ${MAX_SINGLE_REQUEST_ATTACHMENTS} attachments are allowed`,
+                });
+            }
+
+            const subgroup = await Material.getSubGroupById(materialSubGroupId);
+            if (!subgroup || subgroup.deleted_at) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Sub material group not found",
+                });
+            }
+
+            if (
+                String(subgroup.group_code || "").trim() !== materialGroupCode
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Sub material group does not belong to the selected material group",
+                });
+            }
+
+            const safeMaterialGroupCode =
+                sanitizePathSegment(materialGroupCode);
+            const safeSubgroupCode = sanitizePathSegment(
+                subgroup.subgroup_code
+            );
+            const attachments = files.map(file => {
+                const originalFilename =
+                    file.originalFilename || file.newFilename;
+                const { extension, safeOriginalName, safeBaseName } =
+                    sanitizeUploadName(originalFilename);
+
+                if (!SINGLE_REQUEST_FILE_EXTENSIONS.includes(extension)) {
+                    const error = new Error(
+                        "Invalid file format. Please upload files with valid extensions: " +
+                            SINGLE_REQUEST_FILE_EXTENSIONS.join(", ")
+                    );
+                    error.statusCode = 400;
+                    throw error;
+                }
+
+                const timestamp = Date.now().toString();
+                const newName = `${timestamp}_${safeBaseName}.${extension}`;
+                const relativePath = path.posix.join(
+                    "single-request-attachments",
+                    safeMaterialGroupCode,
+                    safeSubgroupCode,
+                    newName
+                );
+
+                return {
+                    tempPath: file.filepath,
+                    originalName: safeOriginalName,
+                    newName,
+                    relativePath,
+                    extension,
+                    mimeType: getMimeType(extension),
+                };
+            });
+
+            const validation =
+                await MaterialTemplate.validateMaterialRequestTemplate({
+                    materialGroupCode,
+                    requestFields,
+                    templateValues,
+                });
+
+            const validationErrors = (validation.errors || []).filter(
+                error => !SINGLE_REQUEST_NON_FORM_FIELD_KEYS.has(error.fieldKey)
+            );
+
+            if (validationErrors.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Material request validation failed",
+                    errors: validationErrors,
+                });
+            }
+
+            const normalizedRequestFields = {
+                ...validation.normalizedRequestFields,
+                material_description:
+                    requestFields.material_description ||
+                    validation.materialDescription ||
+                    validation.normalizedRequestFields?.material_description,
+                storage_location:
+                    requestFields.storage_location ||
+                    requestFields.storageLocation ||
+                    null,
+                plant: requestFields.plant || null,
+            };
+
+            if (
+                !normalizedRequestFields.material_description ||
+                !normalizedRequestFields.base_unit_of_measure
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Material description and Base UoM are required",
+                });
+            }
+
+            const createdRequest = await Material.createSingleRequest({
+                materialGroupCode,
+                materialSubGroupId,
+                requestFields: normalizedRequestFields,
+                templateValues:
+                    validation.normalizedTemplateValues || templateValues,
+                attachments,
+                createdBy: userId,
+            });
+
+            return res.status(201).json({
+                success: true,
+                message: "Single material request created successfully",
+                data: createdRequest,
+            });
+        } catch (error) {
+            const statusCode =
+                error.statusCode || (error.code === 1016 ? 400 : 500);
+
+            return res.status(statusCode).json({
+                success: false,
+                message:
+                    error.code === 1016
+                        ? "File size exceeded. Maximum file size is 5MB"
+                        : error.message ||
+                          "Failed to create single material request",
+                errors: error.errors || [],
+            });
+        } finally {
+            cleanupTempFiles(tempFilePaths);
+        }
+    },
+
+    getSingleRequests: async (req, res) => {
+        try {
+            const userId = req.cookies.user_id;
+            const rows = await Material.getSingleRequestsByUser(userId);
+
+            return res.status(200).json({
+                success: true,
+                data: rows,
+            });
+        } catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to fetch single material requests",
                 error: error.message,
             });
         }
@@ -1362,7 +1719,7 @@ const MaterialController = {
             });
         }
     },
-    
+
     getInitialScreenData: async (req, res) => {
         try {
             const [locations, types] = await Promise.all([

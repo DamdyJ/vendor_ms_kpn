@@ -139,6 +139,18 @@ router.get("/file/:filename", MaterialController.serveFile);
 // SAP data synchronization endpoint
 router.get("/sync-sap", AuthToken.authSession, MaterialController.syncSAPData);
 
+// Single material request endpoints
+router.post(
+    "/requests/single",
+    AuthToken.authSession,
+    MaterialController.createSingleRequest
+);
+router.get(
+    "/requests/single",
+    AuthToken.authSession,
+    MaterialController.getSingleRequests
+);
+
 // Material template endpoints
 router.get("/templates", MaterialController.getMaterialTemplates);
 router.get(

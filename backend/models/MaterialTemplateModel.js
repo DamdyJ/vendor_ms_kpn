@@ -1,5 +1,6 @@
 const DBClientWrapper = require("../helper/DBClientWrapper.js");
 const {
+    MAX_MATERIAL_DESCRIPTION_LENGTH,
     hasValue,
     mapTemplateConfigRows,
     normalizeTemplateValue,
@@ -80,7 +81,40 @@ const MaterialTemplate = {
                 [materialGroupCode]
             );
 
-            const templateConfig = mapTemplateConfigRows(templateResult.rows);
+            let templateConfig = mapTemplateConfigRows(templateResult.rows);
+
+            // Fallback: if no direct mapping, use GENERAL_MISCELLANEOUS template
+            if (!templateConfig) {
+                const fallbackResult = await client.query(
+                    `
+                        SELECT
+                            tm.template_id,
+                            tm.template_code,
+                            tm.template_name,
+                            $1 AS material_group_code,
+                            tr.template_rule_id,
+                            tr.field_order,
+                            tr.is_mandatory,
+                            tr.validation_rule_type,
+                            tr.prefix_value,
+                            tr.rule_detail,
+                            tr.max_length,
+                            fm.field_id,
+                            fm.field_code,
+                            fm.field_key,
+                            fm.field_name_id,
+                            fm.data_type
+                        FROM mat_template_master tm
+                        JOIN mat_template_field_rules tr ON tr.template_id = tm.template_id
+                        JOIN mat_field_master fm ON fm.field_id = tr.field_id
+                        WHERE tm.template_code = 'GENERAL_MISCELLANEOUS'
+                        ORDER BY tr.field_order ASC
+                    `,
+                    [materialGroupCode]
+                );
+                templateConfig = mapTemplateConfigRows(fallbackResult.rows);
+            }
+
             if (!templateConfig) {
                 throw new Error(
                     `Material template tidak ditemukan untuk material group ${materialGroupCode}`
@@ -107,10 +141,21 @@ const MaterialTemplate = {
     },
 
     getMaterialFormSchemaByGroupCode: async materialGroupCode => {
-        const materialTemplate =
-            await MaterialTemplate.getMaterialTemplateByGroupCode(
-                materialGroupCode
-            );
+        let materialTemplate = null;
+        try {
+            materialTemplate =
+                await MaterialTemplate.getMaterialTemplateByGroupCode(
+                    materialGroupCode
+                );
+        } catch (error) {
+            // If template not found, we still want the group and subgroups
+            if (
+                !error.message ||
+                !error.message.includes("Material template tidak ditemukan")
+            ) {
+                throw error;
+            }
+        }
 
         return DBClientWrapper(async client => {
             const materialGroupResult = await client.query(
@@ -147,49 +192,18 @@ const MaterialTemplate = {
                 [materialGroup.id]
             );
 
-            let uiMetadataRows = [];
-            try {
-                const uiMetadataResult = await client.query(`
-                    SELECT
-                        fm.field_id,
-                        fm.field_key,
-                        fm.field_name_id,
-                        uim.section_key,
-                        uim.field_label,
-                        uim.helper_text,
-                        uim.placeholder,
-                        uim.display_order
-                    FROM mat_field_ui_meta uim
-                    JOIN mat_field_master fm ON fm.field_id = uim.field_id
-                    ORDER BY COALESCE(uim.display_order, 2147483647), fm.field_key ASC
-                `);
-
-                uiMetadataRows = uiMetadataResult.rows.map(row => ({
-                    fieldId: row.field_id,
-                    fieldKey: row.field_key,
-                    fieldNameId: row.field_name_id,
-                    sectionKey: row.section_key,
-                    fieldLabel: row.field_label,
-                    helperText: row.helper_text,
-                    placeholder: row.placeholder,
-                    displayOrder: row.display_order,
-                }));
-            } catch (error) {
-                if (error.code !== "42P01") {
-                    throw error;
-                }
-            }
-
             return buildMaterialFormSchema({
                 materialGroup,
-                template: materialTemplate.template,
+                template: materialTemplate ? materialTemplate.template : null,
                 subgroups: subgroupResult.rows.map(row => ({
                     id: row.id,
                     code: row.code,
                     name: row.name,
                 })),
-                requestFieldRules: materialTemplate.requestFieldRules,
-                uiMetadata: uiMetadataRows,
+                requestFieldRules: materialTemplate
+                    ? materialTemplate.requestFieldRules
+                    : [],
+                uiMetadata: [],
             });
         });
     },
@@ -269,11 +283,32 @@ const MaterialTemplate = {
                 templateValues || {}
             );
 
-            normalizedRequestFields.material_description =
-                preview.materialDescription;
+            const materialDescription = hasValue(
+                normalizedRequestFields.material_description
+            )
+                ? normalizedRequestFields.material_description
+                : null;
+
+            if (
+                materialDescription &&
+                materialDescription.length > MAX_MATERIAL_DESCRIPTION_LENGTH
+            ) {
+                errors.push({
+                    fieldKey: "material_description",
+                    fieldLabel: "Material Description",
+                    message: `Material Description melebihi ${MAX_MATERIAL_DESCRIPTION_LENGTH} karakter`,
+                });
+            }
+
+            const previewErrors = (preview.errors || []).filter(
+                error => error.fieldKey !== "material_description"
+            );
 
             const searchTerm = normalizeTemplateValue(
-                preview.materialDescription || preview.fullDescription || ""
+                materialDescription ||
+                    preview.materialDescription ||
+                    preview.fullDescription ||
+                    ""
             );
             let duplicateSuggestions = [];
 
@@ -310,13 +345,13 @@ const MaterialTemplate = {
                 template: materialTemplate.template,
                 normalizedRequestFields,
                 normalizedTemplateValues: preview.normalizedValues,
-                materialDescription: preview.materialDescription,
+                materialDescription,
                 fullDescription: preview.fullDescription,
                 exceedsMaterialDescriptionLimit:
                     preview.exceedsMaterialDescriptionLimit,
                 duplicateSuggestions,
-                errors: [...errors, ...preview.errors],
-                isValid: errors.length === 0 && preview.errors.length === 0,
+                errors: [...errors, ...previewErrors],
+                isValid: errors.length === 0 && previewErrors.length === 0,
             };
         });
     },

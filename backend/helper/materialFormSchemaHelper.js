@@ -41,7 +41,8 @@ const normalizeSectionKey = value => {
 };
 
 const resolveRequestSectionKey = sectionName => {
-    const mappedSection = REQUEST_SECTION_KEY_MAP[String(sectionName || "").toUpperCase()];
+    const mappedSection =
+        REQUEST_SECTION_KEY_MAP[String(sectionName || "").toUpperCase()];
     return mappedSection || normalizeSectionKey(sectionName) || "basic_info";
 };
 
@@ -123,7 +124,8 @@ const pushRequestField = (sections, requestFieldRule, override) => {
         dataType: "TEXT",
         sectionKey,
         sourceSectionName: requestFieldRule.sectionName,
-        displayOrder: override.displayOrder ?? requestFieldRule.displayOrder ?? 0,
+        displayOrder:
+            override.displayOrder ?? requestFieldRule.displayOrder ?? 0,
         isRequired: Boolean(requestFieldRule.isRequired),
         isLocked: Boolean(requestFieldRule.isLocked),
         defaultValue: requestFieldRule.defaultValue ?? null,
@@ -134,7 +136,8 @@ const pushRequestField = (sections, requestFieldRule, override) => {
 };
 
 const pushTemplateField = (sections, templateFieldRule, override) => {
-    const section = ensureSection(sections, "specification");
+    const sectionKey = override.sectionKey || "specification";
+    const section = ensureSection(sections, sectionKey);
 
     section.fields.push({
         kind: "template_field",
@@ -145,8 +148,9 @@ const pushTemplateField = (sections, templateFieldRule, override) => {
         helperText: override.helperText || templateFieldRule.ruleDetail || null,
         placeholder: override.placeholder || null,
         dataType: templateFieldRule.dataType || "TEXT",
-        sectionKey: "specification",
-        displayOrder: override.displayOrder ?? templateFieldRule.fieldOrder ?? 0,
+        sectionKey,
+        displayOrder:
+            override.displayOrder ?? templateFieldRule.fieldOrder ?? 0,
         isRequired: Boolean(templateFieldRule.isMandatory),
         validationRuleType: templateFieldRule.validationRuleType ?? null,
         prefixValue: templateFieldRule.prefixValue ?? null,
@@ -172,7 +176,8 @@ const sortSections = sections =>
             const rightIndex = SECTION_ORDER.indexOf(right.key);
 
             if (leftIndex !== -1 || rightIndex !== -1) {
-                const safeLeftIndex = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
+                const safeLeftIndex =
+                    leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
                 const safeRightIndex =
                     rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
 
@@ -199,7 +204,9 @@ const buildMaterialFormSchema = ({
         pushRequestField(sections, requestFieldRule, override);
     }
 
-    const templateFields = Array.isArray(template?.fields) ? template.fields : [];
+    const templateFields = Array.isArray(template?.fields)
+        ? template.fields
+        : [];
     for (const templateFieldRule of templateFields) {
         const override = uiOverrides.get(templateFieldRule.fieldKey) || {};
         pushTemplateField(sections, templateFieldRule, override);

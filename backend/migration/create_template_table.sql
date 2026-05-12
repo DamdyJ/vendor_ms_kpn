@@ -663,6 +663,38 @@ INSERT INTO public.mat_request_field_rules (
     notes = EXCLUDED.notes,
     updated_at = NOW();
 
+-- Seed: mat_field_master
+INSERT INTO public.mat_field_master (field_code, field_key, field_name_id, data_type, is_template_field, updated_at) VALUES 
+('101', 'part_number', 'Part Number', 'TEXT', true, NOW()),
+('102', 'type_bentuk', 'Type / Bentuk', 'TEXT', true, NOW()),
+('103', 'model', 'Model', 'TEXT', true, NOW()),
+('104', 'bahan_warna_material', 'Bahan / Warna Material', 'TEXT', true, NOW()),
+('105', 'size_dimension', 'Size / Dimension', 'TEXT', true, NOW()),
+('106', 'brand_merek', 'Brand', 'TEXT', true, NOW()),
+('107', 'capacity', 'Capacity', 'TEXT', true, NOW()),
+('108', 'power', 'Power', 'TEXT', true, NOW()),
+('109', 'speed', 'Speed', 'TEXT', true, NOW()),
+('110', 'voltage', 'Voltage', 'TEXT', true, NOW()),
+('111', 'current', 'Current', 'TEXT', true, NOW()),
+('112', 'frequency', 'Frequency', 'TEXT', true, NOW()),
+('113', 'material', 'Material', 'TEXT', true, NOW()),
+('114', 'pressure', 'Pressure', 'TEXT', true, NOW()),
+('115', 'temperature', 'Temperature', 'TEXT', true, NOW()),
+('116', 'connection', 'Connection', 'TEXT', true, NOW()),
+('117', 'application', 'Application', 'TEXT', true, NOW()),
+('118', 'grade', 'Grade', 'TEXT', true, NOW()),
+('119', 'standard', 'Standard', 'TEXT', true, NOW()),
+('120', 'concentration', 'Concentration', 'TEXT', true, NOW()),
+('121', 'volume', 'Volume', 'TEXT', true, NOW()),
+('122', 'weight', 'Weight', 'TEXT', true, NOW()),
+('123', 'color', 'Color', 'TEXT', true, NOW())
+ON CONFLICT (field_code) DO UPDATE SET
+    field_key = EXCLUDED.field_key,
+    field_name_id = EXCLUDED.field_name_id,
+    data_type = EXCLUDED.data_type,
+    is_template_field = EXCLUDED.is_template_field,
+    updated_at = NOW();
+
 -- Seed: template master
 INSERT INTO public.mat_template_master (template_code, template_name, updated_at)
 VALUES ('MECHANICAL_COMPONENT', 'Mechanical Component', NOW())
@@ -1241,6 +1273,32 @@ INSERT INTO public.mat_template_group_map (template_id, material_group_code, upd
 VALUES (
     (SELECT template_id FROM public.mat_template_master WHERE template_code = 'GENERAL_MISCELLANEOUS'),
     '951', NOW()
+) ON CONFLICT (material_group_code) DO UPDATE SET
+    template_id = EXCLUDED.template_id,
+    updated_at = NOW();
+
+-- Additional missing group mappings (from blueprint sections 3.2.1-3.2.12)
+-- 901 → MECHANICAL_COMPONENT (3.2.1 - Valve, Actuator & Control Valve)
+INSERT INTO public.mat_template_group_map (template_id, material_group_code, updated_at)
+VALUES (
+    (SELECT template_id FROM public.mat_template_master WHERE template_code = 'MECHANICAL_COMPONENT'),
+    '901', NOW()
+) ON CONFLICT (material_group_code) DO UPDATE SET
+    template_id = EXCLUDED.template_id,
+    updated_at = NOW();
+-- 908 → EQUIPMENT_MACHINERY (3.2.3 - Burner, Blower & Industrial Fan)
+INSERT INTO public.mat_template_group_map (template_id, material_group_code, updated_at)
+VALUES (
+    (SELECT template_id FROM public.mat_template_master WHERE template_code = 'EQUIPMENT_MACHINERY'),
+    '908', NOW()
+) ON CONFLICT (material_group_code) DO UPDATE SET
+    template_id = EXCLUDED.template_id,
+    updated_at = NOW();
+-- 933 → MECHANICAL_COMPONENT (3.2.1)
+INSERT INTO public.mat_template_group_map (template_id, material_group_code, updated_at)
+VALUES (
+    (SELECT template_id FROM public.mat_template_master WHERE template_code = 'MECHANICAL_COMPONENT'),
+    '933', NOW()
 ) ON CONFLICT (material_group_code) DO UPDATE SET
     template_id = EXCLUDED.template_id,
     updated_at = NOW();

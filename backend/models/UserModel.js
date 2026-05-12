@@ -7,6 +7,9 @@ const crud = require("../helper/crudquery.js");
 const moment = require("moment");
 const PageModel = require("../models/PageModel.js");
 const { param } = require("../routes/UserRoute.js");
+const {
+    buildLoginUserGroupInfo,
+} = require("../helper/singleRequestApproval.js");
 
 const User = {
     showAll: async () => {
@@ -350,6 +353,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
     },
     loginUser: async ({ username, password }) => {
         const client = await db.connect();
+        let transactionStarted = false;
         try {
             // add union to a_uservendor
             const userData = await client.query(
@@ -400,6 +404,20 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                 throw new Error("User not found");
             }
             const userGroup = userData.rows[0].user_group;
+            const userGroupInfoResult = await client.query(
+                `SELECT DISTINCT
+                    user_group_id,
+                    user_group_name
+                FROM mst_page_access
+                WHERE user_group_id = $1
+                    AND user_group_name IS NOT NULL
+                ORDER BY user_group_name`,
+                [userGroup]
+            );
+            const userGroupInfo = buildLoginUserGroupInfo(
+                userGroupInfoResult.rows,
+                userGroup
+            );
             const getAuthorization = await client.query(
                 `
             SELECT 
@@ -481,6 +499,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                 }
             );
             await client.query(TRANS.BEGIN);
+            transactionStarted = true;
             let is_reset_pwd = null;
             if (resdata.role === "MGR") {
                 await client.query(
@@ -507,6 +526,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                 );
             }
             await client.query(TRANS.COMMIT);
+            transactionStarted = false;
             return {
                 fullname: resdata.fullname,
                 username: resdata.username,
@@ -516,15 +536,22 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                 accessToken: accessToken,
                 permission: authPerm,
                 groupid: userGroup,
+                ...userGroupInfo,
                 emp_role_id: resdata.emp_role_id,
                 bu_id: resdata.bu_id,
                 dept_id: resdata.dept_id,
                 is_reset_pwd: is_reset_pwd,
             };
         } catch (error) {
-            await client.query(TRANS.ROLLBACK);
+            if (transactionStarted) {
+                try {
+                    await client.query(TRANS.ROLLBACK);
+                } catch (rollbackError) {
+                    console.error("Login rollback failed:", rollbackError);
+                }
+            }
             console.error(error);
-            throw error.message;
+            throw error;
         } finally {
             client.release();
         }
