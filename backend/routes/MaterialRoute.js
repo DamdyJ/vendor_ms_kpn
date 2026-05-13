@@ -155,6 +155,11 @@ router.get(
     AuthToken.authSession,
     MaterialController.getSingleRequestApprovalInbox
 );
+router.post(
+    "/requests/single/:id/approve",
+    AuthToken.authSession,
+    MaterialController.approveSingleRequest
+);
 
 // Material template endpoints
 router.get("/templates", MaterialController.getMaterialTemplates);

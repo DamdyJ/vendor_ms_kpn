@@ -13,9 +13,114 @@ const Emailer = require("../models/EmailModel.js");
 const TRANS = require("../config/transaction.js");
 const {
     MDM_MATERIAL_GROUP_NAME,
+    buildAutoApprovedApproval3,
     buildInitialSingleRequestApproval,
+    isAdminMaterialApprover,
     isSingleRequestApprovalInboxEligible,
+    resolveSingleRequestApprovalStage,
 } = require("../helper/singleRequestApproval.js");
+
+const buildSingleRequestApprovalError = (message, statusCode, code) => {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    error.code = code;
+    return error;
+};
+
+const LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY = `SELECT
+            r.id AS request_id,
+            r.assigned_to,
+            r.created_by,
+            a.request_id AS approval_request_id,
+            a.requester_user_id,
+            a.approval_1_user_id,
+            a.approval_1_at,
+            a.approval_1_status,
+            a.approval_1_remark,
+            a.approval_2_user_id,
+            a.approval_2_at,
+            a.approval_2_status,
+            a.approval_2_remark,
+            a.approval_3_user_id,
+            a.approval_3_at,
+            a.approval_3_status,
+            a.approval_3_remark
+        FROM mat_single_request r
+        LEFT JOIN mat_single_request_approval a
+            ON a.request_id = r.id
+        WHERE r.id = $1
+        FOR UPDATE OF r`;
+
+const INITIAL_SINGLE_REQUEST_APPROVAL_INSERT_QUERY = `INSERT INTO mat_single_request_approval (
+            request_id,
+            requester_user_id,
+            approval_1_status,
+            created_at,
+            updated_at
+        ) VALUES ($1, $2, $3, NOW(), NOW())
+        ON CONFLICT (request_id) DO UPDATE SET
+            requester_user_id = EXCLUDED.requester_user_id,
+            approval_1_status = COALESCE(
+                mat_single_request_approval.approval_1_status,
+                EXCLUDED.approval_1_status
+            ),
+            updated_at = NOW()
+        RETURNING request_id, requester_user_id, approval_1_status`;
+
+const mergeInitialSingleRequestApprovalSnapshot = (snapshot, approval) => ({
+    ...snapshot,
+    approval_request_id: approval.request_id,
+    requester_user_id: approval.requester_user_id,
+    approval_1_status: approval.approval_1_status,
+});
+
+const getLockedSingleRequestApprovalSnapshot = async (client, requestId) => {
+    const result = await client.query(
+        LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
+        [requestId]
+    );
+
+    if (result.rows.length === 0) {
+        throw buildSingleRequestApprovalError(
+            "Single request not found",
+            404,
+            "SINGLE_REQUEST_NOT_FOUND"
+        );
+    }
+
+    if (!result.rows[0].approval_request_id) {
+        const initialApproval = buildInitialSingleRequestApproval({
+            requestId: result.rows[0].request_id,
+            requesterUserId: result.rows[0].created_by,
+        });
+
+        const approvalResult = await client.query(
+            INITIAL_SINGLE_REQUEST_APPROVAL_INSERT_QUERY,
+            [
+                initialApproval.request_id,
+                initialApproval.requester_user_id,
+                initialApproval.approval_1_status,
+            ]
+        );
+
+        return mergeInitialSingleRequestApprovalSnapshot(
+            result.rows[0],
+            approvalResult.rows[0]
+        );
+    }
+
+    return result.rows[0];
+};
+
+const updateSingleRequestAssignment = async (client, requestId, assignedTo) => {
+    await client.query(
+        `UPDATE mat_single_request
+        SET assigned_to = $2,
+            updated_at = NOW()
+        WHERE id = $1`,
+        [requestId, assignedTo]
+    );
+};
 
 const getRandomMdmMaterialUser = async client => {
     const result = await client.query(
@@ -2882,24 +2987,46 @@ const Material = {
                 await client.query("BEGIN");
 
                 try {
+                    const snapshot = await getLockedSingleRequestApprovalSnapshot(
+                        client,
+                        requestId
+                    );
+                    const activeStage =
+                        resolveSingleRequestApprovalStage(snapshot);
+
+                    if (activeStage !== "Approval 3") {
+                        throw buildSingleRequestApprovalError(
+                            "Approval 3 can only be assigned while the request is actively waiting for Approval 3",
+                            409,
+                            "SINGLE_REQUEST_APPROVAL_CONFLICT"
+                        );
+                    }
+
                     const mdmUser = await getRandomMdmMaterialUser(client);
 
                     if (!mdmUser) {
-                        const error = new Error(
-                            "No active MDM_MATERIAL user found"
+                        throw buildSingleRequestApprovalError(
+                            "No active MDM_MATERIAL user found",
+                            404,
+                            "SINGLE_REQUEST_APPROVAL_NO_MDM_USER"
                         );
-                        error.statusCode = 404;
-                        throw error;
                     }
+
+                    const autoApprovedApproval3 =
+                        buildAutoApprovedApproval3({
+                            approval3UserId: mdmUser.user_id,
+                        });
 
                     const approvalResult = await client.query(
                         `UPDATE mat_single_request_approval
                         SET approval_3_user_id = $2,
-                            approval_3_status = COALESCE(approval_3_status, 'WAITING'),
+                            approval_3_at = NOW(),
+                            approval_3_status = $3,
                             updated_at = NOW()
                         WHERE request_id = $1
                             AND approval_1_status = 'APPROVED'
                             AND approval_2_status = 'APPROVED'
+                            AND (approval_3_status IS NULL OR approval_3_status = 'WAITING')
                         RETURNING
                             request_id,
                             requester_user_id,
@@ -2907,23 +3034,25 @@ const Material = {
                             approval_2_status,
                             approval_3_user_id,
                             approval_3_status`,
-                        [requestId, mdmUser.user_id]
+                        [
+                            requestId,
+                            autoApprovedApproval3.approval_3_user_id,
+                            autoApprovedApproval3.approval_3_status,
+                        ]
                     );
 
                     if (approvalResult.rows.length === 0) {
-                        const error = new Error(
-                            "Approval 3 can only be assigned after Approval 1 and Approval 2 are approved"
+                        throw buildSingleRequestApprovalError(
+                            "Approval 3 can only be assigned while the request is actively waiting for Approval 3",
+                            409,
+                            "SINGLE_REQUEST_APPROVAL_CONFLICT"
                         );
-                        error.statusCode = 400;
-                        throw error;
                     }
 
-                    await client.query(
-                        `UPDATE mat_single_request
-                        SET assigned_to = 'Approval 3',
-                            updated_at = NOW()
-                        WHERE id = $1`,
-                        [requestId]
+                    await updateSingleRequestAssignment(
+                        client,
+                        requestId,
+                        autoApprovedApproval3.assigned_to
                     );
 
                     await client.query("COMMIT");
@@ -2942,6 +3071,151 @@ const Material = {
                 "Error assigning approval 3 from MDM material:",
                 error
             );
+            throw error;
+        }
+    },
+
+    approveSingleRequestByAdmin: async ({
+        requestId,
+        actorUserId,
+        actorUsername,
+        remark,
+    }) => {
+        try {
+            if (!isAdminMaterialApprover(actorUsername)) {
+                throw buildSingleRequestApprovalError(
+                    "Forbidden: single request approval is only available for ADMIN",
+                    403,
+                    "SINGLE_REQUEST_APPROVAL_FORBIDDEN"
+                );
+            }
+
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const snapshot = await getLockedSingleRequestApprovalSnapshot(
+                        client,
+                        requestId
+                    );
+                    const activeStage =
+                        resolveSingleRequestApprovalStage(snapshot);
+                    const safeRemark = remark ?? null;
+
+                    if (!["Approval 1", "Approval 2"].includes(activeStage)) {
+                        throw buildSingleRequestApprovalError(
+                            "Single request is already processed or not waiting for admin approval",
+                            409,
+                            "SINGLE_REQUEST_APPROVAL_CONFLICT"
+                        );
+                    }
+
+                    if (activeStage === "Approval 1") {
+                        const approvalResult = await client.query(
+                            `UPDATE mat_single_request_approval
+                            SET approval_1_user_id = $2,
+                                approval_1_at = NOW(),
+                                approval_1_status = 'APPROVED',
+                                approval_1_remark = $3,
+                                updated_at = NOW()
+                            WHERE request_id = $1
+                                AND COALESCE(approval_1_status, 'WAITING') = 'WAITING'
+                            RETURNING request_id`,
+                            [requestId, actorUserId, safeRemark]
+                        );
+
+                        if (approvalResult.rowCount !== 1) {
+                            throw buildSingleRequestApprovalError(
+                                "Single request is already processed or not waiting for admin approval",
+                                409,
+                                "SINGLE_REQUEST_APPROVAL_CONFLICT"
+                            );
+                        }
+
+                        await updateSingleRequestAssignment(
+                            client,
+                            requestId,
+                            "Approval 2"
+                        );
+                        await client.query("COMMIT");
+
+                        return {
+                            request_id: approvalResult.rows[0].request_id,
+                            stage: "Approval 1",
+                            next_stage: "Approval 2",
+                        };
+                    }
+
+                    const mdmUser = await getRandomMdmMaterialUser(client);
+
+                    if (!mdmUser) {
+                        throw buildSingleRequestApprovalError(
+                            "No active MDM_MATERIAL user found for Approval 3 assignment",
+                            409,
+                            "SINGLE_REQUEST_APPROVAL_NO_MDM_USER"
+                        );
+                    }
+
+                    const autoApprovedApproval3 =
+                        buildAutoApprovedApproval3({
+                            approval3UserId: mdmUser.user_id,
+                        });
+
+                    const approvalResult = await client.query(
+                        `UPDATE mat_single_request_approval
+                        SET approval_2_user_id = $2,
+                            approval_2_at = NOW(),
+                            approval_2_status = 'APPROVED',
+                            approval_2_remark = $3,
+                            approval_3_user_id = $4,
+                            approval_3_at = NOW(),
+                            approval_3_status = $5,
+                            updated_at = NOW()
+                        WHERE request_id = $1
+                            AND approval_1_status = 'APPROVED'
+                            AND COALESCE(approval_2_status, 'WAITING') = 'WAITING'
+                            AND (approval_3_status IS NULL OR approval_3_status = 'WAITING')
+                        RETURNING request_id, approval_3_user_id, approval_3_status`,
+                        [
+                            requestId,
+                            actorUserId,
+                            safeRemark,
+                            autoApprovedApproval3.approval_3_user_id,
+                            autoApprovedApproval3.approval_3_status,
+                        ]
+                    );
+
+                    if (approvalResult.rowCount !== 1) {
+                        throw buildSingleRequestApprovalError(
+                            "Single request is already processed or not waiting for admin approval",
+                            409,
+                            "SINGLE_REQUEST_APPROVAL_CONFLICT"
+                        );
+                    }
+
+                    await updateSingleRequestAssignment(
+                        client,
+                        requestId,
+                        autoApprovedApproval3.assigned_to
+                    );
+                    await client.query("COMMIT");
+
+                    return {
+                        request_id: approvalResult.rows[0].request_id,
+                        stage: "Approval 2",
+                        next_stage: autoApprovedApproval3.next_stage,
+                        approval_3_user_id:
+                            approvalResult.rows[0].approval_3_user_id,
+                        approval_3_status:
+                            approvalResult.rows[0].approval_3_status,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error approving single request by admin:", error);
             throw error;
         }
     },
@@ -3146,6 +3420,12 @@ const Material = {
             throw error;
         }
     },
+};
+
+Material.__private = {
+    INITIAL_SINGLE_REQUEST_APPROVAL_INSERT_QUERY,
+    LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
+    mergeInitialSingleRequestApprovalSnapshot,
 };
 
 module.exports = Material;

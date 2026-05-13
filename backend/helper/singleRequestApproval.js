@@ -1,6 +1,7 @@
 const MDM_MATERIAL_GROUP_NAME = "MDM_MATERIAL";
 const INITIAL_APPROVAL_STATUS = "WAITING";
 const ADMIN_APPROVER_USERNAME = "ADMIN";
+const COMPLETED_SINGLE_REQUEST_ASSIGNMENT = "Completed";
 
 const normalizeUsername = value => String(value || "").trim().toUpperCase();
 
@@ -77,10 +78,25 @@ const buildInitialSingleRequestApproval = ({ requestId, requesterUserId }) => {
     };
 };
 
+const buildAutoApprovedApproval3 = ({ approval3UserId }) => {
+    if (!approval3UserId) {
+        throw new Error("approval3UserId is required");
+    }
+
+    return {
+        approval_3_user_id: approval3UserId,
+        approval_3_status: "APPROVED",
+        assigned_to: COMPLETED_SINGLE_REQUEST_ASSIGNMENT,
+        next_stage: COMPLETED_SINGLE_REQUEST_ASSIGNMENT,
+    };
+};
+
 module.exports = {
     ADMIN_APPROVER_USERNAME,
+    COMPLETED_SINGLE_REQUEST_ASSIGNMENT,
     INITIAL_APPROVAL_STATUS,
     MDM_MATERIAL_GROUP_NAME,
+    buildAutoApprovedApproval3,
     buildInitialSingleRequestApproval,
     buildLoginUserGroupInfo,
     isAdminMaterialApprover,

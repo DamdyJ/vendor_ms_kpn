@@ -87,7 +87,16 @@ const REQUEST_FIELD_ALIASES = {
     materialType: "material_type",
     materialGroup: "material_group",
     storageLocation: "storage_location",
+    longText1: "long_text_1",
+    longText2: "long_text_2",
+    longText3: "long_text_3",
 };
+
+const SINGLE_REQUEST_LONG_TEXT_FIELD_KEYS = [
+    "long_text_1",
+    "long_text_2",
+    "long_text_3",
+];
 
 const SINGLE_REQUEST_NON_FORM_FIELD_KEYS = new Set([
     "profit_center",
@@ -112,6 +121,36 @@ const normalizeRequestFields = payload => {
             normalized[legacyKey] !== undefined
         ) {
             normalized[canonicalKey] = normalized[legacyKey];
+        }
+    }
+
+    return normalized;
+};
+
+const buildNormalizedSingleRequestFields = ({
+    requestFields = {},
+    validation = {},
+}) => {
+    const normalizedRequestFields = validation.normalizedRequestFields || {};
+    const normalized = {
+        ...normalizedRequestFields,
+        material_description:
+            requestFields.material_description ||
+            validation.materialDescription ||
+            normalizedRequestFields.material_description,
+        storage_location:
+            requestFields.storage_location ||
+            requestFields.storageLocation ||
+            null,
+        plant: requestFields.plant || null,
+    };
+
+    for (const fieldKey of SINGLE_REQUEST_LONG_TEXT_FIELD_KEYS) {
+        if (
+            requestFields[fieldKey] !== undefined &&
+            requestFields[fieldKey] !== null
+        ) {
+            normalized[fieldKey] = requestFields[fieldKey];
         }
     }
 
@@ -1507,18 +1546,10 @@ const MaterialController = {
                 });
             }
 
-            const normalizedRequestFields = {
-                ...validation.normalizedRequestFields,
-                material_description:
-                    requestFields.material_description ||
-                    validation.materialDescription ||
-                    validation.normalizedRequestFields?.material_description,
-                storage_location:
-                    requestFields.storage_location ||
-                    requestFields.storageLocation ||
-                    null,
-                plant: requestFields.plant || null,
-            };
+            const normalizedRequestFields = buildNormalizedSingleRequestFields({
+                requestFields,
+                validation,
+            });
 
             if (
                 !normalizedRequestFields.material_description ||
@@ -1601,6 +1632,58 @@ const MaterialController = {
             return res.status(500).json({
                 success: false,
                 message: "Failed to fetch single request approval inbox",
+                error: error.message,
+            });
+        }
+    },
+
+    approveSingleRequest: async (req, res) => {
+        try {
+            if (!isAdminMaterialApprover(req.cookies?.username)) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        "Forbidden: single request approval is only available for ADMIN",
+                });
+            }
+
+            const result = await Material.approveSingleRequestByAdmin({
+                requestId: req.params.id,
+                actorUserId: req.cookies.user_id,
+                actorUsername: req.cookies.username,
+                remark: req.body?.remark ?? null,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: "Single request approved successfully",
+                data: result,
+            });
+        } catch (error) {
+            if (error.statusCode === 403) {
+                return res.status(403).json({
+                    success: false,
+                    message: error.message,
+                });
+            }
+
+            if (error.statusCode === 404) {
+                return res.status(404).json({
+                    success: false,
+                    message: error.message,
+                });
+            }
+
+            if (error.statusCode === 409) {
+                return res.status(409).json({
+                    success: false,
+                    message: error.message,
+                });
+            }
+
+            return res.status(500).json({
+                success: false,
+                message: "Failed to approve single request",
                 error: error.message,
             });
         }
@@ -1763,6 +1846,11 @@ const MaterialController = {
             res.status(500).json({ success: false, error: error.message });
         }
     },
+};
+
+MaterialController.__private = {
+    buildNormalizedSingleRequestFields,
+    normalizeRequestFields,
 };
 
 module.exports = MaterialController;
