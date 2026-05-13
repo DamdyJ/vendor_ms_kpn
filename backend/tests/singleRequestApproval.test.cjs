@@ -1,5 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const Material = require("../models/MaterialModel");
+const MaterialController = require("../controllers/MaterialController");
 
 /*
  * Implementation note: approval inbox contract
@@ -62,6 +64,87 @@ test("buildInitialSingleRequestApproval rejects missing request id", () => {
 test("isAdminMaterialApprover accepts mixed casing and whitespace around ADMIN and rejects BUDI", () => {
     assert.equal(isAdminMaterialApprover("  adMin  "), true);
     assert.equal(isAdminMaterialApprover("BUDI"), false);
+});
+
+test("approval inbox contract includes Approval 1 row shapes", () => {
+    assert.equal(
+        resolveSingleRequestApprovalStage({
+            approval_1_status: "WAITING",
+            approval_2_status: null,
+            approval_3_status: null,
+        }),
+        "Approval 1"
+    );
+});
+
+test("approval inbox contract includes Approval 2 row shapes", () => {
+    assert.equal(
+        resolveSingleRequestApprovalStage({
+            approval_1_status: "APPROVED",
+            approval_2_status: "WAITING",
+            approval_3_status: null,
+        }),
+        "Approval 2"
+    );
+});
+
+test("approval inbox contract excludes Approval 3 row shapes", () => {
+    assert.equal(
+        resolveSingleRequestApprovalStage({
+            approval_1_status: "APPROVED",
+            approval_2_status: "APPROVED",
+            approval_3_status: "WAITING",
+        }),
+        "Approval 3"
+    );
+});
+
+test("approval inbox contract rejects non-admin usernames", () => {
+    assert.equal(isAdminMaterialApprover("BUDI"), false);
+    assert.equal(isAdminMaterialApprover("requestor-01"), false);
+});
+
+test("getSingleRequestApprovalInbox returns 403 for non-admin actor before model access", async () => {
+    const originalGetSingleRequestApprovalInbox =
+        Material.getSingleRequestApprovalInbox;
+    let modelCalled = false;
+
+    Material.getSingleRequestApprovalInbox = async () => {
+        modelCalled = true;
+        return [];
+    };
+
+    const req = {
+        cookies: {
+            username: "budi",
+        },
+    };
+    const res = {
+        statusCode: 200,
+        body: null,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(payload) {
+            this.body = payload;
+            return this;
+        },
+    };
+
+    try {
+        await MaterialController.getSingleRequestApprovalInbox(req, res);
+    } finally {
+        Material.getSingleRequestApprovalInbox =
+            originalGetSingleRequestApprovalInbox;
+    }
+
+    assert.equal(modelCalled, false);
+    assert.equal(res.statusCode, 403);
+    assert.deepEqual(res.body, {
+        success: false,
+        message: "Forbidden: approval inbox is only available for ADMIN",
+    });
 });
 
 test("resolveSingleRequestApprovalStage returns Approval 1 when approval_1_status is WAITING", () => {

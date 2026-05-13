@@ -4,6 +4,9 @@ const formidable = require("formidable");
 const fs = require("fs");
 const path = require("path");
 const getMimeType = require("../helper/mimetype");
+const {
+    isAdminMaterialApprover,
+} = require("../helper/singleRequestApproval");
 
 const MATERIAL_FILE_DIRECTORIES = [
     path.join(path.resolve(), "backend", "public"),
@@ -1580,6 +1583,13 @@ const MaterialController = {
 
     getSingleRequestApprovalInbox: async (req, res) => {
         try {
+            if (!isAdminMaterialApprover(req.cookies?.username)) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Forbidden: approval inbox is only available for ADMIN",
+                });
+            }
+
             const rows = await Material.getSingleRequestApprovalInbox();
 
             return res.status(200).json({
