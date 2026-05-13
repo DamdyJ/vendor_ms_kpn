@@ -86,3 +86,36 @@ test("resolveSingleRequestApprovalStage returns Approval 3 when approval_1 and a
         "Approval 3"
     );
 });
+
+test("resolveSingleRequestApprovalStage returns null when approval flow is fully approved", () => {
+    assert.equal(
+        resolveSingleRequestApprovalStage({
+            approval_1_status: "APPROVED",
+            approval_2_status: "APPROVED",
+            approval_3_status: "APPROVED",
+        }),
+        null
+    );
+});
+
+test("resolveSingleRequestApprovalStage returns null when stage 3 is rejected", () => {
+    assert.equal(
+        resolveSingleRequestApprovalStage({
+            approval_1_status: "APPROVED",
+            approval_2_status: "APPROVED",
+            approval_3_status: "REJECTED",
+        }),
+        null
+    );
+});
+
+test("resolveSingleRequestApprovalStage returns null when stage 3 is rework", () => {
+    assert.equal(
+        resolveSingleRequestApprovalStage({
+            approval_1_status: "APPROVED",
+            approval_2_status: "APPROVED",
+            approval_3_status: "REWORK",
+        }),
+        null
+    );
+});

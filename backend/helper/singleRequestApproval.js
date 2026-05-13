@@ -4,6 +4,7 @@ const ADMIN_APPROVER_USERNAME = "ADMIN";
 
 const normalizeUsername = value => String(value || "").trim().toUpperCase();
 
+// Temporary material-approval fallback: normalized username ADMIN, not a generic admin-role check.
 const isAdminMaterialApprover = username =>
     normalizeUsername(username) === ADMIN_APPROVER_USERNAME;
 
@@ -23,7 +24,7 @@ const resolveSingleRequestApprovalStage = (approval = {}) => {
     if (
         approval1Status === "APPROVED" &&
         approval2Status === "APPROVED" &&
-        approval3Status !== "APPROVED"
+        (!approval3Status || approval3Status === INITIAL_APPROVAL_STATUS)
     ) {
         return "Approval 3";
     }
