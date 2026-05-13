@@ -14,6 +14,7 @@ const TRANS = require("../config/transaction.js");
 const {
     MDM_MATERIAL_GROUP_NAME,
     buildInitialSingleRequestApproval,
+    isSingleRequestApprovalInboxEligible,
 } = require("../helper/singleRequestApproval.js");
 
 const getRandomMdmMaterialUser = async client => {
@@ -3138,7 +3139,7 @@ const Material = {
                     )`)
                 );
 
-                return result.rows;
+                return result.rows.filter(isSingleRequestApprovalInboxEligible);
             });
         } catch (error) {
             console.error("Error fetching single request approval inbox:", error);

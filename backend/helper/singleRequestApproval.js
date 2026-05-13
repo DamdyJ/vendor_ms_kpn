@@ -32,6 +32,11 @@ const resolveSingleRequestApprovalStage = (approval = {}) => {
     return null;
 };
 
+const isSingleRequestApprovalInboxEligible = (approval = {}) =>
+    ["Approval 1", "Approval 2"].includes(
+        resolveSingleRequestApprovalStage(approval)
+    );
+
 const getUniqueGroupNames = rows => {
     const names = rows
         .map(row => row.user_group_name)
@@ -79,6 +84,7 @@ module.exports = {
     buildInitialSingleRequestApproval,
     buildLoginUserGroupInfo,
     isAdminMaterialApprover,
+    isSingleRequestApprovalInboxEligible,
     normalizeUsername,
     resolveSingleRequestApprovalStage,
 };

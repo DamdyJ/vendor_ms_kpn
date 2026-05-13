@@ -15,6 +15,7 @@ const {
     buildInitialSingleRequestApproval,
     buildLoginUserGroupInfo,
     isAdminMaterialApprover,
+    isSingleRequestApprovalInboxEligible,
     resolveSingleRequestApprovalStage,
 } = require("../helper/singleRequestApproval");
 
@@ -66,36 +67,79 @@ test("isAdminMaterialApprover accepts mixed casing and whitespace around ADMIN a
     assert.equal(isAdminMaterialApprover("BUDI"), false);
 });
 
-test("approval inbox contract includes Approval 1 row shapes", () => {
+test("approval inbox eligibility includes Approval 1 rows", () => {
     assert.equal(
-        resolveSingleRequestApprovalStage({
+        isSingleRequestApprovalInboxEligible({
             approval_1_status: "WAITING",
             approval_2_status: null,
             approval_3_status: null,
         }),
-        "Approval 1"
+        true
     );
 });
 
-test("approval inbox contract includes Approval 2 row shapes", () => {
+test("approval inbox eligibility includes Approval 2 rows", () => {
     assert.equal(
-        resolveSingleRequestApprovalStage({
+        isSingleRequestApprovalInboxEligible({
             approval_1_status: "APPROVED",
             approval_2_status: "WAITING",
             approval_3_status: null,
         }),
-        "Approval 2"
+        true
     );
 });
 
-test("approval inbox contract excludes Approval 3 row shapes", () => {
+test("approval inbox eligibility excludes Approval 3 rows", () => {
     assert.equal(
-        resolveSingleRequestApprovalStage({
+        isSingleRequestApprovalInboxEligible({
             approval_1_status: "APPROVED",
             approval_2_status: "APPROVED",
             approval_3_status: "WAITING",
         }),
-        "Approval 3"
+        false
+    );
+});
+
+test("approval inbox eligibility excludes fully approved rows", () => {
+    assert.equal(
+        isSingleRequestApprovalInboxEligible({
+            approval_1_status: "APPROVED",
+            approval_2_status: "APPROVED",
+            approval_3_status: "APPROVED",
+        }),
+        false
+    );
+});
+
+test("approval inbox eligibility excludes rejected rows", () => {
+    assert.equal(
+        isSingleRequestApprovalInboxEligible({
+            approval_1_status: "REJECTED",
+        }),
+        false
+    );
+    assert.equal(
+        isSingleRequestApprovalInboxEligible({
+            approval_1_status: "APPROVED",
+            approval_2_status: "REJECTED",
+        }),
+        false
+    );
+});
+
+test("approval inbox eligibility excludes rework rows", () => {
+    assert.equal(
+        isSingleRequestApprovalInboxEligible({
+            approval_1_status: "REWORK",
+        }),
+        false
+    );
+    assert.equal(
+        isSingleRequestApprovalInboxEligible({
+            approval_1_status: "APPROVED",
+            approval_2_status: "REWORK",
+        }),
+        false
     );
 });
 
