@@ -1,5 +1,35 @@
 const MDM_MATERIAL_GROUP_NAME = "MDM_MATERIAL";
 const INITIAL_APPROVAL_STATUS = "WAITING";
+const ADMIN_APPROVER_USERNAME = "ADMIN";
+
+const normalizeUsername = value => String(value || "").trim().toUpperCase();
+
+const isAdminMaterialApprover = username =>
+    normalizeUsername(username) === ADMIN_APPROVER_USERNAME;
+
+const resolveSingleRequestApprovalStage = (approval = {}) => {
+    const approval1Status = approval.approval_1_status;
+    const approval2Status = approval.approval_2_status;
+    const approval3Status = approval.approval_3_status;
+
+    if (!approval1Status || approval1Status === INITIAL_APPROVAL_STATUS) {
+        return "Approval 1";
+    }
+
+    if (approval1Status === "APPROVED" && (!approval2Status || approval2Status === INITIAL_APPROVAL_STATUS)) {
+        return "Approval 2";
+    }
+
+    if (
+        approval1Status === "APPROVED" &&
+        approval2Status === "APPROVED" &&
+        approval3Status !== "APPROVED"
+    ) {
+        return "Approval 3";
+    }
+
+    return null;
+};
 
 const getUniqueGroupNames = rows => {
     const names = rows
@@ -42,8 +72,12 @@ const buildInitialSingleRequestApproval = ({ requestId, requesterUserId }) => {
 };
 
 module.exports = {
+    ADMIN_APPROVER_USERNAME,
     INITIAL_APPROVAL_STATUS,
     MDM_MATERIAL_GROUP_NAME,
     buildInitialSingleRequestApproval,
     buildLoginUserGroupInfo,
+    isAdminMaterialApprover,
+    normalizeUsername,
+    resolveSingleRequestApprovalStage,
 };

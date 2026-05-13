@@ -5,6 +5,8 @@ const {
     MDM_MATERIAL_GROUP_NAME,
     buildInitialSingleRequestApproval,
     buildLoginUserGroupInfo,
+    isAdminMaterialApprover,
+    resolveSingleRequestApprovalStage,
 } = require("../helper/singleRequestApproval");
 
 test("buildLoginUserGroupInfo maps page access rows into stable login metadata", () => {
@@ -47,5 +49,40 @@ test("buildInitialSingleRequestApproval rejects missing request id", () => {
                 requesterUserId: "USER-BUDI",
             }),
         /requestId is required/
+    );
+});
+
+test("isAdminMaterialApprover accepts mixed casing and whitespace around ADMIN and rejects BUDI", () => {
+    assert.equal(isAdminMaterialApprover("  adMin  "), true);
+    assert.equal(isAdminMaterialApprover("BUDI"), false);
+});
+
+test("resolveSingleRequestApprovalStage returns Approval 1 when approval_1_status is WAITING", () => {
+    assert.equal(
+        resolveSingleRequestApprovalStage({
+            approval_1_status: "WAITING",
+        }),
+        "Approval 1"
+    );
+});
+
+test("resolveSingleRequestApprovalStage returns Approval 2 when approval_1 approved and approval_2 waiting", () => {
+    assert.equal(
+        resolveSingleRequestApprovalStage({
+            approval_1_status: "APPROVED",
+            approval_2_status: "WAITING",
+        }),
+        "Approval 2"
+    );
+});
+
+test("resolveSingleRequestApprovalStage returns Approval 3 when approval_1 and approval_2 approved and approval_3 waiting", () => {
+    assert.equal(
+        resolveSingleRequestApprovalStage({
+            approval_1_status: "APPROVED",
+            approval_2_status: "APPROVED",
+            approval_3_status: "WAITING",
+        }),
+        "Approval 3"
     );
 });
