@@ -36,6 +36,85 @@ const getRandomMdmMaterialUser = async client => {
     return result.rows[0] || null;
 };
 
+const SINGLE_REQUEST_SELECT_FIELDS = `r.id,
+                        r.request_no AS ticket_number,
+                        r.ticket_type,
+                        r.material_group_code,
+                        mig.name AS material_group_name,
+                        r.material_sub_group_id,
+                        mis.code AS material_sub_group_code,
+                        mis.name AS material_sub_group_name,
+                        r.plant_code,
+                        r.sloc_code,
+                        r.material_description,
+                        r.base_uom AS uom,
+                        r.long_text_1,
+                        r.long_text_2,
+                        r.long_text_3,
+                        r.template_payload,
+                        r.status,
+                        a.requester_user_id,
+                        a.approval_1_user_id,
+                        a.approval_1_status,
+                        TO_CHAR(a.approval_1_at, 'YYYY-MM-DD HH24:MI') AS approval_1_at,
+                        a.approval_1_remark,
+                        a.approval_2_user_id,
+                        a.approval_2_status,
+                        TO_CHAR(a.approval_2_at, 'YYYY-MM-DD HH24:MI') AS approval_2_at,
+                        a.approval_2_remark,
+                        a.approval_3_status,
+                        a.approval_3_user_id,
+                        TO_CHAR(a.approval_3_at, 'YYYY-MM-DD HH24:MI') AS approval_3_at,
+                        a.approval_3_remark,
+                        COALESCE(u.username, r.created_by) AS created_by,
+                        TO_CHAR(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
+                        r.assigned_to,
+                        COALESCE(
+                            jsonb_agg(
+                                jsonb_build_object(
+                                    'id', att.id,
+                                    'file_name', att.file_name,
+                                    'file_path', att.file_path,
+                                    'file_type', att.file_type
+                                )
+                                ORDER BY att.id
+                            ) FILTER (WHERE att.id IS NOT NULL),
+                            '[]'::jsonb
+                        ) AS attachments`;
+
+const SINGLE_REQUEST_GROUP_BY = `r.id,
+                        mig.name,
+                        mis.code,
+                        mis.name,
+                        a.requester_user_id,
+                        a.approval_1_user_id,
+                        a.approval_1_status,
+                        a.approval_1_at,
+                        a.approval_1_remark,
+                        a.approval_2_user_id,
+                        a.approval_2_status,
+                        a.approval_2_at,
+                        a.approval_2_remark,
+                        a.approval_3_user_id,
+                        a.approval_3_status,
+                        a.approval_3_at,
+                        a.approval_3_remark,
+                        u.username`;
+
+const buildSingleRequestListQuery = whereClause => `SELECT
+                        ${SINGLE_REQUEST_SELECT_FIELDS}
+                    FROM mat_single_request r
+                    LEFT JOIN mat_single_request_approval a
+                        ON a.request_id = r.id
+                    LEFT JOIN mst_user u ON u.user_id = r.created_by
+                    LEFT JOIN mat_item_group mig ON mig.code = r.material_group_code
+                    LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
+                    LEFT JOIN mat_single_request_attachment att ON att.request_id = r.id
+                    WHERE ${whereClause}
+                    GROUP BY
+                        ${SINGLE_REQUEST_GROUP_BY}
+                    ORDER BY r.created_at DESC, r.id DESC`;
+
 const Material = {
     // Create a new material group
     createMaterialGroup: async groupData => {
@@ -3034,80 +3113,7 @@ const Material = {
         try {
             return await DBClientWrapper(async client => {
                 const result = await client.query(
-                    `SELECT
-                        r.id,
-                        r.request_no AS ticket_number,
-                        r.ticket_type,
-                        r.material_group_code,
-                        mig.name AS material_group_name,
-                        r.material_sub_group_id,
-                        mis.code AS material_sub_group_code,
-                        mis.name AS material_sub_group_name,
-                        r.plant_code,
-                        r.sloc_code,
-                        r.material_description,
-                        r.base_uom AS uom,
-                        r.long_text_1,
-                        r.long_text_2,
-                        r.long_text_3,
-                        r.template_payload,
-                        r.status,
-                        a.requester_user_id,
-                        a.approval_1_user_id,
-                        a.approval_1_status,
-                        TO_CHAR(a.approval_1_at, 'YYYY-MM-DD HH24:MI') AS approval_1_at,
-                        a.approval_1_remark,
-                        a.approval_2_user_id,
-                        a.approval_2_status,
-                        TO_CHAR(a.approval_2_at, 'YYYY-MM-DD HH24:MI') AS approval_2_at,
-                        a.approval_2_remark,
-                        a.approval_3_status,
-                        a.approval_3_user_id,
-                        TO_CHAR(a.approval_3_at, 'YYYY-MM-DD HH24:MI') AS approval_3_at,
-                        a.approval_3_remark,
-                        COALESCE(u.username, r.created_by) AS created_by,
-                        TO_CHAR(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
-                        r.assigned_to,
-                        COALESCE(
-                            jsonb_agg(
-                                jsonb_build_object(
-                                    'id', att.id,
-                                    'file_name', att.file_name,
-                                    'file_path', att.file_path,
-                                    'file_type', att.file_type
-                                )
-                                ORDER BY att.id
-                            ) FILTER (WHERE att.id IS NOT NULL),
-                            '[]'::jsonb
-                        ) AS attachments
-                    FROM mat_single_request r
-                    LEFT JOIN mat_single_request_approval a
-                        ON a.request_id = r.id
-                    LEFT JOIN mst_user u ON u.user_id = r.created_by
-                    LEFT JOIN mat_item_group mig ON mig.code = r.material_group_code
-                    LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
-                    LEFT JOIN mat_single_request_attachment att ON att.request_id = r.id
-                    WHERE r.created_by = $1
-                    GROUP BY
-                        r.id,
-                        mig.name,
-                        mis.code,
-                        mis.name,
-                        a.requester_user_id,
-                        a.approval_1_user_id,
-                        a.approval_1_status,
-                        a.approval_1_at,
-                        a.approval_1_remark,
-                        a.approval_2_user_id,
-                        a.approval_2_status,
-                        a.approval_2_at,
-                        a.approval_2_remark,
-                        a.approval_3_user_id,
-                        a.approval_3_status,
-                        a.approval_3_at,
-                        a.approval_3_remark,
-                        u.username
-                    ORDER BY r.created_at DESC, r.id DESC`,
+                    buildSingleRequestListQuery("r.created_by = $1"),
                     [createdBy]
                 );
 
@@ -3115,6 +3121,27 @@ const Material = {
             });
         } catch (error) {
             console.error("Error fetching single requests by user:", error);
+            throw error;
+        }
+    },
+
+    getSingleRequestApprovalInbox: async () => {
+        try {
+            return await DBClientWrapper(async client => {
+                const result = await client.query(
+                    buildSingleRequestListQuery(`(
+                        COALESCE(a.approval_1_status, 'WAITING') = 'WAITING'
+                        OR (
+                            a.approval_1_status = 'APPROVED'
+                            AND COALESCE(a.approval_2_status, 'WAITING') = 'WAITING'
+                        )
+                    )`)
+                );
+
+                return result.rows;
+            });
+        } catch (error) {
+            console.error("Error fetching single request approval inbox:", error);
             throw error;
         }
     },

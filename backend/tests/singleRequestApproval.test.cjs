@@ -1,6 +1,13 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
+/*
+ * Implementation note: approval inbox contract
+ * - include Approval 1 rows
+ * - include Approval 2 rows
+ * - exclude Approval 3 rows
+ */
+
 const {
     MDM_MATERIAL_GROUP_NAME,
     buildInitialSingleRequestApproval,

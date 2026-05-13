@@ -1578,6 +1578,24 @@ const MaterialController = {
         }
     },
 
+    getSingleRequestApprovalInbox: async (req, res) => {
+        try {
+            const rows = await Material.getSingleRequestApprovalInbox();
+
+            return res.status(200).json({
+                success: true,
+                message: "Single request approval inbox fetched successfully",
+                data: rows,
+            });
+        } catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to fetch single request approval inbox",
+                error: error.message,
+            });
+        }
+    },
+
     searchMaterialTemplateSuggestions: async (req, res) => {
         try {
             const { q = "", materialGroupCode = null, limit = 10 } = req.query;
