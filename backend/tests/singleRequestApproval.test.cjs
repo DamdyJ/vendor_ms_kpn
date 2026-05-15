@@ -11,15 +11,20 @@ const MaterialController = require("../controllers/MaterialController");
  */
 
 const {
+    buildAdministratorAssignmentDecision,
     buildAutoApprovedApproval3,
+    canEditApprovalAssignee,
     MDM_MATERIAL_GROUP_NAME,
     buildInitialSingleRequestApproval,
     buildLoginUserGroupInfo,
     isAdminMaterialApprover,
     isSingleRequestApprovalInboxEligible,
+    resolveSingleRequestHeaderAssignment,
     resolveSingleRequestApprovalStage,
 } = require("../helper/singleRequestApproval");
 const {
+    assertSingleRequestAssignableStatus,
+    buildSingleRequestApproverAssignmentPatch,
     INITIAL_SINGLE_REQUEST_APPROVAL_INSERT_QUERY,
     LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
     mergeInitialSingleRequestApprovalSnapshot,
@@ -86,6 +91,259 @@ test("buildAutoApprovedApproval3 finalizes approval 3 immediately after approval
     );
 });
 
+test("buildAdministratorAssignmentDecision auto-assigns approval 3 from MDM candidates and keeps all approvers unique", () => {
+    const decision = buildAdministratorAssignmentDecision({
+        snapshot: {
+            approval_1_user_id: null,
+            approval_1_status: null,
+            approval_2_user_id: null,
+            approval_2_status: null,
+            approval_3_user_id: null,
+            approval_3_status: null,
+        },
+        patch: {
+            approval_1_user_id: "USER-APPROVER-01",
+            approval_2_user_id: "USER-APPROVER-02",
+        },
+        usersById: {
+            "USER-APPROVER-01": {
+                id: "USER-APPROVER-01",
+                is_active: true,
+                group_name: "PROCUREMENT",
+            },
+            "USER-APPROVER-02": {
+                id: "USER-APPROVER-02",
+                is_active: true,
+                group_name: "SUPPLY_CHAIN",
+            },
+            "USER-MDM-01": {
+                id: "USER-MDM-01",
+                is_active: true,
+                group_name: MDM_MATERIAL_GROUP_NAME,
+            },
+            "USER-MDM-02": {
+                id: "USER-MDM-02",
+                is_active: true,
+                group_name: MDM_MATERIAL_GROUP_NAME,
+            },
+        },
+        approval3Candidates: ["USER-APPROVER-01", "USER-MDM-01", "USER-MDM-02"],
+        randomIndex: 1,
+    });
+
+    assert.equal(decision.approval_1_user_id, "USER-APPROVER-01");
+    assert.equal(decision.approval_2_user_id, "USER-APPROVER-02");
+    assert.equal(decision.approval_3_user_id, "USER-MDM-02");
+    assert.equal(
+        new Set([
+            decision.approval_1_user_id,
+            decision.approval_2_user_id,
+            decision.approval_3_user_id,
+        ]).size,
+        3
+    );
+    assert.equal(decision.assigned_to, "Approval 1");
+});
+
+test("buildAdministratorAssignmentDecision rejects changing approval 1 after it leaves WAITING", () => {
+    assert.throws(
+        () =>
+            buildAdministratorAssignmentDecision({
+                snapshot: {
+                    approval_1_user_id: "USER-APPROVER-01",
+                    approval_1_status: "APPROVED",
+                    approval_2_user_id: null,
+                    approval_2_status: null,
+                    approval_3_user_id: null,
+                    approval_3_status: null,
+                },
+                patch: {
+                    approval_1_user_id: "USER-APPROVER-02",
+                },
+                usersById: {
+                    "USER-APPROVER-01": {
+                        id: "USER-APPROVER-01",
+                        is_active: true,
+                        group_name: "PROCUREMENT",
+                    },
+                    "USER-APPROVER-02": {
+                        id: "USER-APPROVER-02",
+                        is_active: true,
+                        group_name: "SUPPLY_CHAIN",
+                    },
+                },
+                approval3Candidates: [],
+                randomIndex: 0,
+            }),
+        /approval 1 assignee can only be changed while status is WAITING/i
+    );
+});
+
+test("buildAdministratorAssignmentDecision rejects changing approval 2 after it leaves WAITING", () => {
+    assert.throws(
+        () =>
+            buildAdministratorAssignmentDecision({
+                snapshot: {
+                    approval_1_user_id: "USER-APPROVER-01",
+                    approval_1_status: "APPROVED",
+                    approval_2_user_id: "USER-APPROVER-02",
+                    approval_2_status: "REWORK",
+                    approval_3_user_id: null,
+                    approval_3_status: null,
+                },
+                patch: {
+                    approval_2_user_id: "USER-APPROVER-03",
+                },
+                usersById: {
+                    "USER-APPROVER-01": {
+                        id: "USER-APPROVER-01",
+                        is_active: true,
+                        group_name: "PROCUREMENT",
+                    },
+                    "USER-APPROVER-02": {
+                        id: "USER-APPROVER-02",
+                        is_active: true,
+                        group_name: "SUPPLY_CHAIN",
+                    },
+                    "USER-APPROVER-03": {
+                        id: "USER-APPROVER-03",
+                        is_active: true,
+                        group_name: "ENGINEERING",
+                    },
+                },
+                approval3Candidates: [],
+                randomIndex: 0,
+            }),
+        /approval 2 assignee can only be changed while status is WAITING/i
+    );
+});
+
+test("buildAdministratorAssignmentDecision does not auto-assign approval 3 when flow is already terminal", () => {
+    const decision = buildAdministratorAssignmentDecision({
+        snapshot: {
+            approval_1_user_id: "USER-APPROVER-01",
+            approval_1_status: "APPROVED",
+            approval_2_user_id: "USER-APPROVER-02",
+            approval_2_status: "REJECTED",
+            approval_3_user_id: null,
+            approval_3_status: null,
+        },
+        patch: {},
+        usersById: {
+            "USER-APPROVER-01": {
+                id: "USER-APPROVER-01",
+                is_active: true,
+                group_name: "PROCUREMENT",
+            },
+            "USER-APPROVER-02": {
+                id: "USER-APPROVER-02",
+                is_active: true,
+                group_name: "SUPPLY_CHAIN",
+            },
+            "USER-MDM-01": {
+                id: "USER-MDM-01",
+                is_active: true,
+                group_name: MDM_MATERIAL_GROUP_NAME,
+            },
+        },
+        approval3Candidates: ["USER-MDM-01"],
+        randomIndex: 0,
+    });
+
+    assert.equal(decision.approval_3_user_id, null);
+    assert.equal(decision.assigned_to, null);
+});
+
+test("buildAdministratorAssignmentDecision does not auto-assign approval 3 when approval 3 status is terminal without an assignee", () => {
+    const decision = buildAdministratorAssignmentDecision({
+        snapshot: {
+            approval_1_user_id: "USER-APPROVER-01",
+            approval_1_status: "APPROVED",
+            approval_2_user_id: "USER-APPROVER-02",
+            approval_2_status: "APPROVED",
+            approval_3_user_id: null,
+            approval_3_status: "REWORK",
+        },
+        patch: {},
+        usersById: {
+            "USER-APPROVER-01": {
+                id: "USER-APPROVER-01",
+                is_active: true,
+                group_name: "PROCUREMENT",
+            },
+            "USER-APPROVER-02": {
+                id: "USER-APPROVER-02",
+                is_active: true,
+                group_name: "SUPPLY_CHAIN",
+            },
+            "USER-MDM-01": {
+                id: "USER-MDM-01",
+                is_active: true,
+                group_name: MDM_MATERIAL_GROUP_NAME,
+            },
+        },
+        approval3Candidates: ["USER-MDM-01"],
+        randomIndex: 0,
+    });
+
+    assert.equal(decision.approval_3_user_id, null);
+    assert.equal(decision.assigned_to, null);
+});
+
+test("buildAdministratorAssignmentDecision normalizes explicit undefined patch values to null", () => {
+    const decision = buildAdministratorAssignmentDecision({
+        snapshot: {
+            approval_1_user_id: "USER-APPROVER-01",
+            approval_1_status: null,
+            approval_2_user_id: "USER-APPROVER-02",
+            approval_2_status: null,
+            approval_3_user_id: null,
+            approval_3_status: null,
+        },
+        patch: {
+            approval_1_user_id: undefined,
+            approval_2_user_id: undefined,
+        },
+        usersById: {
+            "USER-APPROVER-01": {
+                id: "USER-APPROVER-01",
+                is_active: true,
+                group_name: "PROCUREMENT",
+            },
+            "USER-APPROVER-02": {
+                id: "USER-APPROVER-02",
+                is_active: true,
+                group_name: "SUPPLY_CHAIN",
+            },
+        },
+        approval3Candidates: [],
+        randomIndex: 0,
+    });
+
+    assert.equal(decision.approval_1_user_id, null);
+    assert.equal(decision.approval_2_user_id, null);
+    assert.equal(decision.approval_3_user_id, null);
+});
+
+test("resolveSingleRequestHeaderAssignment keeps request on Approval 2 when approval 1 is approved and approval 2 is waiting", () => {
+    assert.equal(
+        resolveSingleRequestHeaderAssignment({
+            approval_1_status: "APPROVED",
+            approval_2_status: "WAITING",
+            approval_3_status: null,
+        }),
+        "Approval 2"
+    );
+});
+
+test("canEditApprovalAssignee only returns true for WAITING or null statuses", () => {
+    assert.equal(canEditApprovalAssignee(null), true);
+    assert.equal(canEditApprovalAssignee("WAITING"), true);
+    assert.equal(canEditApprovalAssignee("APPROVED"), false);
+    assert.equal(canEditApprovalAssignee("REJECTED"), false);
+    assert.equal(canEditApprovalAssignee("REWORK"), false);
+});
+
 test("approval snapshot query only locks the base request row", () => {
     assert.equal(
         typeof LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
@@ -94,6 +352,10 @@ test("approval snapshot query only locks the base request row", () => {
     assert.match(
         LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
         /LEFT JOIN mat_single_request_approval a/i
+    );
+    assert.match(
+        LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
+        /r\.status/i
     );
     assert.match(
         LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
@@ -146,6 +408,42 @@ test("mergeInitialSingleRequestApprovalSnapshot turns a legacy request into Appr
     assert.equal(snapshot.requester_user_id, "USER-ADMIN");
     assert.equal(snapshot.approval_1_status, "WAITING");
     assert.equal(resolveSingleRequestApprovalStage(snapshot), "Approval 1");
+});
+
+test("buildSingleRequestApproverAssignmentPatch preserves omitted approval fields", () => {
+    assert.deepEqual(
+        buildSingleRequestApproverAssignmentPatch({
+            approval2UserId: "USER-APPROVER-02",
+        }),
+        {
+            approval_2_user_id: "USER-APPROVER-02",
+        }
+    );
+    assert.deepEqual(
+        buildSingleRequestApproverAssignmentPatch({
+            approval1UserId: "USER-APPROVER-01",
+        }),
+        {
+            approval_1_user_id: "USER-APPROVER-01",
+        }
+    );
+});
+
+test("assertSingleRequestAssignableStatus rejects requests outside Submit status", () => {
+    assert.doesNotThrow(() =>
+        assertSingleRequestAssignableStatus({ request_id: 1, status: "Submit" })
+    );
+
+    assert.throws(
+        () =>
+            assertSingleRequestAssignableStatus({
+                request_id: 1,
+                status: "Approved",
+            }),
+        error =>
+            error.statusCode === 409 &&
+            /only be assigned while status is Submit/i.test(error.message)
+    );
 });
 
 test("isAdminMaterialApprover accepts mixed casing and whitespace around ADMIN and rejects BUDI", () => {
@@ -365,6 +663,266 @@ test("approveSingleRequest returns 403 for non-admin actor before model access",
     assert.deepEqual(res.body, {
         success: false,
         message: "Forbidden: single request approval is only available for ADMIN",
+    });
+});
+
+test("assignSingleRequestApprovers returns 403 for non-admin actor before model access", async () => {
+    const originalAssignSingleRequestApproversByAdmin =
+        Material.assignSingleRequestApproversByAdmin;
+    let modelCalled = false;
+
+    Material.assignSingleRequestApproversByAdmin = async () => {
+        modelCalled = true;
+        return { request_id: 55 };
+    };
+
+    const req = {
+        params: { id: "55" },
+        cookies: {
+            username: "budi",
+        },
+        body: {
+            approval1UserId: "USER-APPROVER-01",
+            approval2UserId: "USER-APPROVER-02",
+        },
+    };
+    const res = {
+        statusCode: 200,
+        body: null,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(payload) {
+            this.body = payload;
+            return this;
+        },
+    };
+
+    try {
+        await MaterialController.assignSingleRequestApprovers(req, res);
+    } finally {
+        Material.assignSingleRequestApproversByAdmin =
+            originalAssignSingleRequestApproversByAdmin;
+    }
+
+    assert.equal(modelCalled, false);
+    assert.equal(res.statusCode, 403);
+    assert.deepEqual(res.body, {
+        success: false,
+        message:
+            "Forbidden: single request approver assignment is only available for ADMIN",
+    });
+});
+
+test("assignSingleRequestApprovers forwards payload to model and returns updated row", async () => {
+    const originalAssignSingleRequestApproversByAdmin =
+        Material.assignSingleRequestApproversByAdmin;
+    let capturedPayload = null;
+    const updatedRow = {
+        request_id: 55,
+        approval_1_user_id: "USER-APPROVER-01",
+        approval_1_status: "WAITING",
+        approval_2_user_id: "USER-APPROVER-02",
+        approval_2_status: null,
+        approval_3_user_id: "USER-MDM-01",
+        approval_3_status: "WAITING",
+        assigned_to: "Approval 1",
+    };
+
+    Material.assignSingleRequestApproversByAdmin = async payload => {
+        capturedPayload = payload;
+        return updatedRow;
+    };
+
+    const req = {
+        params: { id: "55" },
+        cookies: {
+            username: " ADMIN ",
+        },
+        body: {
+            approval1UserId: "USER-APPROVER-01",
+            approval2UserId: "USER-APPROVER-02",
+        },
+    };
+    const res = {
+        statusCode: 200,
+        body: null,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(payload) {
+            this.body = payload;
+            return this;
+        },
+    };
+
+    try {
+        await MaterialController.assignSingleRequestApprovers(req, res);
+    } finally {
+        Material.assignSingleRequestApproversByAdmin =
+            originalAssignSingleRequestApproversByAdmin;
+    }
+
+    assert.deepEqual(capturedPayload, {
+        requestId: "55",
+        actorUsername: " ADMIN ",
+        approval1UserId: "USER-APPROVER-01",
+        approval2UserId: "USER-APPROVER-02",
+    });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.body, {
+        success: true,
+        message: "Single request approvers assigned successfully",
+        data: updatedRow,
+    });
+});
+
+test("assignSingleRequestApprovers omits absent approval fields before model access", async () => {
+    const originalAssignSingleRequestApproversByAdmin =
+        Material.assignSingleRequestApproversByAdmin;
+    let capturedPayload = null;
+
+    Material.assignSingleRequestApproversByAdmin = async payload => {
+        capturedPayload = payload;
+        return {
+            request_id: 55,
+            approval_1_user_id: "USER-APPROVER-01",
+            approval_2_user_id: "USER-APPROVER-03",
+        };
+    };
+
+    const req = {
+        params: { id: "55" },
+        cookies: {
+            username: "ADMIN",
+        },
+        body: {
+            approval2UserId: "USER-APPROVER-03",
+        },
+    };
+    const res = {
+        statusCode: 200,
+        body: null,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(payload) {
+            this.body = payload;
+            return this;
+        },
+    };
+
+    try {
+        await MaterialController.assignSingleRequestApprovers(req, res);
+    } finally {
+        Material.assignSingleRequestApproversByAdmin =
+            originalAssignSingleRequestApproversByAdmin;
+    }
+
+    assert.equal(
+        Object.prototype.hasOwnProperty.call(capturedPayload, "approval1UserId"),
+        false
+    );
+    assert.equal(capturedPayload.approval2UserId, "USER-APPROVER-03");
+    assert.equal(res.statusCode, 200);
+});
+
+test("assignSingleRequestApprovers returns 404 when model reports missing request", async () => {
+    const originalAssignSingleRequestApproversByAdmin =
+        Material.assignSingleRequestApproversByAdmin;
+    const notFoundError = new Error("Single request not found");
+    notFoundError.statusCode = 404;
+
+    Material.assignSingleRequestApproversByAdmin = async () => {
+        throw notFoundError;
+    };
+
+    const req = {
+        params: { id: "99" },
+        cookies: {
+            username: "ADMIN",
+        },
+        body: {
+            approval1UserId: "USER-APPROVER-01",
+            approval2UserId: "USER-APPROVER-02",
+        },
+    };
+    const res = {
+        statusCode: 200,
+        body: null,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(payload) {
+            this.body = payload;
+            return this;
+        },
+    };
+
+    try {
+        await MaterialController.assignSingleRequestApprovers(req, res);
+    } finally {
+        Material.assignSingleRequestApproversByAdmin =
+            originalAssignSingleRequestApproversByAdmin;
+    }
+
+    assert.equal(res.statusCode, 404);
+    assert.deepEqual(res.body, {
+        success: false,
+        message: "Single request not found",
+    });
+});
+
+test("assignSingleRequestApprovers returns 409 when model reports assignment conflict", async () => {
+    const originalAssignSingleRequestApproversByAdmin =
+        Material.assignSingleRequestApproversByAdmin;
+    const conflictError = new Error(
+        "approval 1 assignee can only be changed while status is WAITING"
+    );
+    conflictError.statusCode = 409;
+
+    Material.assignSingleRequestApproversByAdmin = async () => {
+        throw conflictError;
+    };
+
+    const req = {
+        params: { id: "77" },
+        cookies: {
+            username: "ADMIN",
+        },
+        body: {
+            approval1UserId: "USER-APPROVER-03",
+            approval2UserId: "USER-APPROVER-02",
+        },
+    };
+    const res = {
+        statusCode: 200,
+        body: null,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(payload) {
+            this.body = payload;
+            return this;
+        },
+    };
+
+    try {
+        await MaterialController.assignSingleRequestApprovers(req, res);
+    } finally {
+        Material.assignSingleRequestApproversByAdmin =
+            originalAssignSingleRequestApproversByAdmin;
+    }
+
+    assert.equal(res.statusCode, 409);
+    assert.deepEqual(res.body, {
+        success: false,
+        message: "approval 1 assignee can only be changed while status is WAITING",
     });
 });
 

@@ -1689,6 +1689,63 @@ const MaterialController = {
         }
     },
 
+    assignSingleRequestApprovers: async (req, res) => {
+        try {
+            if (!isAdminMaterialApprover(req.cookies?.username)) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        "Forbidden: single request approver assignment is only available for ADMIN",
+                });
+            }
+
+            const assignmentPayload = {
+                requestId: req.params.id,
+                actorUsername: req.cookies.username,
+            };
+
+            if (
+                Object.prototype.hasOwnProperty.call(
+                    req.body || {},
+                    "approval1UserId"
+                )
+            ) {
+                assignmentPayload.approval1UserId = req.body.approval1UserId;
+            }
+
+            if (
+                Object.prototype.hasOwnProperty.call(
+                    req.body || {},
+                    "approval2UserId"
+                )
+            ) {
+                assignmentPayload.approval2UserId = req.body.approval2UserId;
+            }
+
+            const result =
+                await Material.assignSingleRequestApproversByAdmin(
+                    assignmentPayload
+                );
+
+            return res.status(200).json({
+                success: true,
+                message: "Single request approvers assigned successfully",
+                data: result,
+            });
+        } catch (error) {
+            const statusCode = error.statusCode || 500;
+            const message =
+                statusCode === 500
+                    ? "Failed to assign single request approvers"
+                    : error.message;
+
+            return res.status(statusCode).json({
+                success: false,
+                message,
+            });
+        }
+    },
+
     searchMaterialTemplateSuggestions: async (req, res) => {
         try {
             const { q = "", materialGroupCode = null, limit = 10 } = req.query;

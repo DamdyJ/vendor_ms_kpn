@@ -155,6 +155,11 @@ router.get(
     AuthToken.authSession,
     MaterialController.getSingleRequestApprovalInbox
 );
+router.patch(
+    "/requests/single/:id/assign-approvers",
+    AuthToken.authSession,
+    MaterialController.assignSingleRequestApprovers
+);
 router.post(
     "/requests/single/:id/approve",
     AuthToken.authSession,

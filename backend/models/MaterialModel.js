@@ -12,7 +12,9 @@ const saveToDatabase = require("../helper/sap_seeding");
 const Emailer = require("../models/EmailModel.js");
 const TRANS = require("../config/transaction.js");
 const {
+    INITIAL_APPROVAL_STATUS,
     MDM_MATERIAL_GROUP_NAME,
+    buildAdministratorAssignmentDecision,
     buildAutoApprovedApproval3,
     buildInitialSingleRequestApproval,
     isAdminMaterialApprover,
@@ -31,6 +33,7 @@ const LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY = `SELECT
             r.id AS request_id,
             r.assigned_to,
             r.created_by,
+            r.status,
             a.request_id AS approval_request_id,
             a.requester_user_id,
             a.approval_1_user_id,
@@ -74,7 +77,40 @@ const mergeInitialSingleRequestApprovalSnapshot = (snapshot, approval) => ({
     approval_1_status: approval.approval_1_status,
 });
 
-const getLockedSingleRequestApprovalSnapshot = async (client, requestId) => {
+const isSubmittedSingleRequestStatus = status =>
+    String(status || "").trim().toUpperCase() === "SUBMIT";
+
+const assertSingleRequestAssignableStatus = snapshot => {
+    if (isSubmittedSingleRequestStatus(snapshot?.status)) {
+        return;
+    }
+
+    throw buildSingleRequestApprovalError(
+        "Single request approvers can only be assigned while status is Submit",
+        409,
+        "SINGLE_REQUEST_APPROVER_ASSIGNMENT_STATUS_CONFLICT"
+    );
+};
+
+const buildSingleRequestApproverAssignmentPatch = (payload = {}) => {
+    const patch = {};
+
+    if (Object.prototype.hasOwnProperty.call(payload, "approval1UserId")) {
+        patch.approval_1_user_id = payload.approval1UserId;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, "approval2UserId")) {
+        patch.approval_2_user_id = payload.approval2UserId;
+    }
+
+    return patch;
+};
+
+const getLockedSingleRequestApprovalSnapshot = async (
+    client,
+    requestId,
+    { beforeBackfill } = {}
+) => {
     const result = await client.query(
         LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
         [requestId]
@@ -86,6 +122,10 @@ const getLockedSingleRequestApprovalSnapshot = async (client, requestId) => {
             404,
             "SINGLE_REQUEST_NOT_FOUND"
         );
+    }
+
+    if (beforeBackfill) {
+        beforeBackfill(result.rows[0]);
     }
 
     if (!result.rows[0].approval_request_id) {
@@ -120,6 +160,64 @@ const updateSingleRequestAssignment = async (client, requestId, assignedTo) => {
         WHERE id = $1`,
         [requestId, assignedTo]
     );
+};
+
+const queryUsersWithPageAccessByIds = async (client, userIds) => {
+    const uniqueUserIds = [...new Set(userIds.filter(Boolean))];
+
+    if (uniqueUserIds.length === 0) {
+        return {};
+    }
+
+    const result = await client.query(
+        `SELECT
+            mu.user_id,
+            mu.fullname,
+            mu.username,
+            mu.email,
+            mu.is_active,
+            MIN(mpa.user_group_name) AS user_group_name,
+            ARRAY_AGG(DISTINCT mpa.user_group_name)
+                FILTER (WHERE mpa.user_group_name IS NOT NULL) AS group_names
+        FROM mst_user mu
+        JOIN mst_page_access mpa
+            ON mpa.user_group_id = mu.user_group
+        WHERE mu.user_id = ANY($1)
+        GROUP BY
+            mu.user_id,
+            mu.fullname,
+            mu.username,
+            mu.email,
+            mu.is_active`,
+        [uniqueUserIds]
+    );
+
+    return result.rows.reduce((usersById, user) => {
+        usersById[user.user_id] = user;
+        return usersById;
+    }, {});
+};
+
+const queryActiveMdmMaterialUsers = async client => {
+    const result = await client.query(
+        `SELECT
+            mu.user_id,
+            mu.fullname,
+            mu.username,
+            mu.email,
+            mu.is_active,
+            mpa.user_group_name,
+            ARRAY[$1] AS group_names
+        FROM mst_user mu
+        JOIN mst_page_access mpa
+            ON mpa.user_group_id = mu.user_group
+        WHERE mpa.user_group_name = $1
+            AND mu.is_active = true
+        ORDER BY mu.user_id`,
+        [MDM_MATERIAL_GROUP_NAME]
+    );
+
+    return result.rows;
 };
 
 const getRandomMdmMaterialUser = async client => {
@@ -2987,10 +3085,11 @@ const Material = {
                 await client.query("BEGIN");
 
                 try {
-                    const snapshot = await getLockedSingleRequestApprovalSnapshot(
-                        client,
-                        requestId
-                    );
+                    const snapshot =
+                        await getLockedSingleRequestApprovalSnapshot(
+                            client,
+                            requestId
+                        );
                     const activeStage =
                         resolveSingleRequestApprovalStage(snapshot);
 
@@ -3012,10 +3111,9 @@ const Material = {
                         );
                     }
 
-                    const autoApprovedApproval3 =
-                        buildAutoApprovedApproval3({
-                            approval3UserId: mdmUser.user_id,
-                        });
+                    const autoApprovedApproval3 = buildAutoApprovedApproval3({
+                        approval3UserId: mdmUser.user_id,
+                    });
 
                     const approvalResult = await client.query(
                         `UPDATE mat_single_request_approval
@@ -3075,6 +3173,164 @@ const Material = {
         }
     },
 
+    assignSingleRequestApproversByAdmin: async (payload = {}) => {
+        const {
+            requestId,
+            actorUsername,
+            approval1UserId,
+            approval2UserId,
+        } = payload;
+
+        try {
+            if (!isAdminMaterialApprover(actorUsername)) {
+                throw buildSingleRequestApprovalError(
+                    "Forbidden: single request approver assignment is only available for ADMIN",
+                    403,
+                    "SINGLE_REQUEST_APPROVER_ASSIGNMENT_FORBIDDEN"
+                );
+            }
+
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const snapshot =
+                        await getLockedSingleRequestApprovalSnapshot(
+                            client,
+                            requestId,
+                            {
+                                beforeBackfill:
+                                    assertSingleRequestAssignableStatus,
+                            }
+                        );
+                    assertSingleRequestAssignableStatus(snapshot);
+
+                    const patch = buildSingleRequestApproverAssignmentPatch({
+                        ...(Object.prototype.hasOwnProperty.call(
+                            payload,
+                            "approval1UserId"
+                        )
+                            ? { approval1UserId }
+                            : {}),
+                        ...(Object.prototype.hasOwnProperty.call(
+                            payload,
+                            "approval2UserId"
+                        )
+                            ? { approval2UserId }
+                            : {}),
+                    });
+                    const manualUsersById = await queryUsersWithPageAccessByIds(
+                        client,
+                        Object.values(patch)
+                    );
+                    const approval3Users =
+                        await queryActiveMdmMaterialUsers(client);
+                    const usersById = approval3Users.reduce(
+                        (allUsersById, user) => {
+                            allUsersById[user.user_id] = user;
+                            return allUsersById;
+                        },
+                        { ...manualUsersById }
+                    );
+
+                    let decision;
+
+                    try {
+                        decision = buildAdministratorAssignmentDecision({
+                            snapshot,
+                            patch,
+                            usersById,
+                            approval3Candidates: approval3Users.map(
+                                user => user.user_id
+                            ),
+                            randomIndex: approval3Users.length
+                                ? Math.floor(
+                                      Math.random() * approval3Users.length
+                                  )
+                                : 0,
+                        });
+                    } catch (error) {
+                        throw buildSingleRequestApprovalError(
+                            error.message,
+                            409,
+                            "SINGLE_REQUEST_APPROVER_ASSIGNMENT_CONFLICT"
+                        );
+                    }
+
+                    const approval3Status = decision.approval_3_user_id
+                        ? snapshot.approval_3_status || INITIAL_APPROVAL_STATUS
+                        : snapshot.approval_3_status;
+                    const approvalResult = await client.query(
+                        `UPDATE mat_single_request_approval
+                        SET approval_1_user_id = $2,
+                            approval_2_user_id = $3,
+                            approval_3_user_id = $4,
+                            approval_3_status = $5,
+                            updated_at = NOW()
+                        WHERE request_id = $1
+                        RETURNING
+                            request_id,
+                            requester_user_id,
+                            approval_1_user_id,
+                            approval_1_status,
+                            approval_2_user_id,
+                            approval_2_status,
+                            approval_3_user_id,
+                            approval_3_status`,
+                        [
+                            requestId,
+                            decision.approval_1_user_id,
+                            decision.approval_2_user_id,
+                            decision.approval_3_user_id,
+                            approval3Status,
+                        ]
+                    );
+
+                    if (approvalResult.rowCount !== 1) {
+                        throw buildSingleRequestApprovalError(
+                            "Single request not found",
+                            404,
+                            "SINGLE_REQUEST_NOT_FOUND"
+                        );
+                    }
+
+                    const nextAssignedTo =
+                        decision.assigned_to &&
+                        decision.assigned_to !== snapshot.assigned_to
+                            ? decision.assigned_to
+                            : snapshot.assigned_to;
+
+                    if (
+                        decision.assigned_to &&
+                        decision.assigned_to !== snapshot.assigned_to
+                    ) {
+                        await updateSingleRequestAssignment(
+                            client,
+                            requestId,
+                            decision.assigned_to
+                        );
+                    }
+
+                    await client.query("COMMIT");
+
+                    return {
+                        ...approvalResult.rows[0],
+                        assigned_to: nextAssignedTo,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error(
+                "Error assigning single request approvers by admin:",
+                error
+            );
+            throw error;
+        }
+    },
+
     approveSingleRequestByAdmin: async ({
         requestId,
         actorUserId,
@@ -3094,10 +3350,11 @@ const Material = {
                 await client.query("BEGIN");
 
                 try {
-                    const snapshot = await getLockedSingleRequestApprovalSnapshot(
-                        client,
-                        requestId
-                    );
+                    const snapshot =
+                        await getLockedSingleRequestApprovalSnapshot(
+                            client,
+                            requestId
+                        );
                     const activeStage =
                         resolveSingleRequestApprovalStage(snapshot);
                     const safeRemark = remark ?? null;
@@ -3156,10 +3413,9 @@ const Material = {
                         );
                     }
 
-                    const autoApprovedApproval3 =
-                        buildAutoApprovedApproval3({
-                            approval3UserId: mdmUser.user_id,
-                        });
+                    const autoApprovedApproval3 = buildAutoApprovedApproval3({
+                        approval3UserId: mdmUser.user_id,
+                    });
 
                     const approvalResult = await client.query(
                         `UPDATE mat_single_request_approval
@@ -3416,13 +3672,18 @@ const Material = {
                 return result.rows.filter(isSingleRequestApprovalInboxEligible);
             });
         } catch (error) {
-            console.error("Error fetching single request approval inbox:", error);
+            console.error(
+                "Error fetching single request approval inbox:",
+                error
+            );
             throw error;
         }
     },
 };
 
 Material.__private = {
+    assertSingleRequestAssignableStatus,
+    buildSingleRequestApproverAssignmentPatch,
     INITIAL_SINGLE_REQUEST_APPROVAL_INSERT_QUERY,
     LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
     mergeInitialSingleRequestApprovalSnapshot,
