@@ -7,9 +7,10 @@ const crud = require("../helper/crudquery.js");
 const moment = require("moment");
 const PageModel = require("../models/PageModel.js");
 const { param } = require("../routes/UserRoute.js");
+const { buildLoginUserGroupInfo } = require("../helper/singleRequestApproval.js");
 const {
-    buildLoginUserGroupInfo,
-} = require("../helper/singleRequestApproval.js");
+    buildMaterialSidebarPermission,
+} = require("../helper/materialSidebarMenu.js");
 
 const User = {
     showAll: async () => {
@@ -460,6 +461,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                     delete: item.fdelete,
                 };
             });
+            authPerm = buildMaterialSidebarPermission(authPerm);
             if (!userData.rows[0].is_active) {
                 throw new Error("User is inactive");
             }
@@ -657,6 +659,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                         delete: item.fdelete,
                     };
                 });
+                authPerm = buildMaterialSidebarPermission(authPerm);
                 if (user.role === "VENDOR") {
                     // IF USER VENDOR, CHECK RESET PASS
                     // SELECT IS_RESET_PWD
@@ -742,7 +745,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                     delete: item.fdelete,
                 };
             });
-            return authPerm;
+            return buildMaterialSidebarPermission(authPerm);
         } catch (error) {
             console.error(error);
             throw error;

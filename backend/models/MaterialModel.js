@@ -180,7 +180,7 @@ const queryUsersWithPageAccessByIds = async (client, userIds) => {
             ARRAY_AGG(DISTINCT mpa.user_group_name)
                 FILTER (WHERE mpa.user_group_name IS NOT NULL) AS group_names
         FROM mst_user mu
-        JOIN mst_page_access mpa
+        LEFT JOIN mst_page_access mpa
             ON mpa.user_group_id = mu.user_group
         WHERE mu.user_id = ANY($1)
         GROUP BY
@@ -3221,7 +3221,7 @@ const Material = {
                     });
                     const manualUsersById = await queryUsersWithPageAccessByIds(
                         client,
-                        Object.values(patch)
+                        [...Object.values(patch), snapshot.approval_1_user_id, snapshot.approval_2_user_id]
                     );
                     const approval3Users =
                         await queryActiveMdmMaterialUsers(client);
