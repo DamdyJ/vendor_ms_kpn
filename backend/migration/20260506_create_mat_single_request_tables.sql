@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS public.mat_single_request (
     id bigserial PRIMARY KEY,
     request_no varchar(30) NOT NULL,
     ticket_type varchar(20) NOT NULL DEFAULT 'Create',
-    material_group_code varchar(10) NOT NULL,
+    material_group_id int4 NOT NULL,
     material_sub_group_id int4 NULL,
     plant_code varchar(20) NULL,
     sloc_code varchar(20) NULL,
@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS public.mat_single_request (
     created_at timestamptz NOT NULL DEFAULT NOW(),
     updated_at timestamptz NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_mat_single_request_no UNIQUE (request_no),
+    CONSTRAINT fk_mat_single_request_group
+        FOREIGN KEY (material_group_id)
+        REFERENCES public.mat_item_group(id),
     CONSTRAINT fk_mat_single_request_sub_group
         FOREIGN KEY (material_sub_group_id)
         REFERENCES public.mat_item_sub_group(id)
@@ -36,7 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_mat_single_request_created_by
     ON public.mat_single_request(created_by);
 
 CREATE INDEX IF NOT EXISTS idx_mat_single_request_group
-    ON public.mat_single_request(material_group_code);
+    ON public.mat_single_request(material_group_id);
 
 CREATE INDEX IF NOT EXISTS idx_mat_single_request_sub_group
     ON public.mat_single_request(material_sub_group_id);

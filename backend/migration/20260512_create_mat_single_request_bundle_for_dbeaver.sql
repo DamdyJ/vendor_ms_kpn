@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS public.mat_single_request (
     id bigserial PRIMARY KEY,
     request_no varchar(30) NOT NULL,
     ticket_type varchar(20) NOT NULL DEFAULT 'Create',
-    material_group_code varchar(10) NOT NULL,
+    material_group_id int4 NULL,
     material_sub_group_id int4 NULL,
     plant_code varchar(20) NULL,
     sloc_code varchar(20) NULL,
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS public.mat_single_request (
 ALTER TABLE public.mat_single_request
     ADD COLUMN IF NOT EXISTS request_no varchar(30) NULL,
     ADD COLUMN IF NOT EXISTS ticket_type varchar(20) NOT NULL DEFAULT 'Create',
-    ADD COLUMN IF NOT EXISTS material_group_code varchar(10) NULL,
+    ADD COLUMN IF NOT EXISTS material_group_id int4 NULL,
     ADD COLUMN IF NOT EXISTS material_sub_group_id int4 NULL,
     ADD COLUMN IF NOT EXISTS plant_code varchar(20) NULL,
     ADD COLUMN IF NOT EXISTS sloc_code varchar(20) NULL,
@@ -68,10 +68,31 @@ SET ticket_type = COALESCE(ticket_type, 'Create'),
     created_at = COALESCE(created_at, NOW()),
     updated_at = COALESCE(updated_at, NOW());
 
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'mat_single_request'
+          AND column_name = 'material_group_code'
+    ) THEN
+        UPDATE public.mat_single_request r
+        SET material_group_id = g.id
+        FROM public.mat_item_group g
+        WHERE r.material_group_id IS NULL
+          AND r.material_group_code IS NOT NULL
+          AND g.code = r.material_group_code;
+
+        ALTER TABLE public.mat_single_request
+            DROP COLUMN IF EXISTS material_group_code;
+    END IF;
+END $$;
+
 ALTER TABLE public.mat_single_request
     ALTER COLUMN request_no SET NOT NULL,
     ALTER COLUMN ticket_type SET NOT NULL,
-    ALTER COLUMN material_group_code SET NOT NULL,
+    ALTER COLUMN material_group_id SET NOT NULL,
     ALTER COLUMN material_description SET NOT NULL,
     ALTER COLUMN base_uom SET NOT NULL,
     ALTER COLUMN status SET NOT NULL,
@@ -90,6 +111,20 @@ BEGIN
     ) THEN
         ALTER TABLE public.mat_single_request
             ADD CONSTRAINT uq_mat_single_request_no UNIQUE (request_no);
+    END IF;
+
+    IF to_regclass('public.mat_item_group') IS NOT NULL
+        AND NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'fk_mat_single_request_group'
+                AND conrelid = 'public.mat_single_request'::regclass
+        )
+    THEN
+        ALTER TABLE public.mat_single_request
+            ADD CONSTRAINT fk_mat_single_request_group
+            FOREIGN KEY (material_group_id)
+            REFERENCES public.mat_item_group(id);
     END IF;
 
     IF to_regclass('public.mat_item_sub_group') IS NOT NULL
@@ -117,7 +152,7 @@ CREATE INDEX IF NOT EXISTS idx_mat_single_request_created_by
     ON public.mat_single_request(created_by);
 
 CREATE INDEX IF NOT EXISTS idx_mat_single_request_group
-    ON public.mat_single_request(material_group_code);
+    ON public.mat_single_request(material_group_id);
 
 CREATE INDEX IF NOT EXISTS idx_mat_single_request_sub_group
     ON public.mat_single_request(material_sub_group_id);

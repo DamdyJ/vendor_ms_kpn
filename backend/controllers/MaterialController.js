@@ -1470,6 +1470,14 @@ const MaterialController = {
                 });
             }
 
+            const materialGroup = await Material.getMaterialGroupByCode(materialGroupCode);
+            if (!materialGroup) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Material group not found",
+                });
+            }
+
             const subgroup = await Material.getSubGroupById(materialSubGroupId);
             if (!subgroup || subgroup.deleted_at) {
                 return res.status(404).json({
@@ -1478,9 +1486,7 @@ const MaterialController = {
                 });
             }
 
-            if (
-                String(subgroup.group_code || "").trim() !== materialGroupCode
-            ) {
+            if (Number(subgroup.item_group_id) !== Number(materialGroup.id)) {
                 return res.status(400).json({
                     success: false,
                     message:
@@ -1489,7 +1495,7 @@ const MaterialController = {
             }
 
             const safeMaterialGroupCode =
-                sanitizePathSegment(materialGroupCode);
+                sanitizePathSegment(materialGroup.code);
             const safeSubgroupCode = sanitizePathSegment(
                 subgroup.subgroup_code
             );
@@ -1562,7 +1568,7 @@ const MaterialController = {
             }
 
             const createdRequest = await Material.createSingleRequest({
-                materialGroupCode,
+                materialGroupId: materialGroup.id,
                 materialSubGroupId,
                 requestFields: normalizedRequestFields,
                 templateValues:
