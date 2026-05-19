@@ -20,6 +20,7 @@ const {
     buildSingleRequestApprovalSnapshot,
     canActorApproveSingleRequestStage,
     canEditApprovalAssignee,
+    filterSingleRequestApprovalInboxRows,
     isAdminMaterialApprover,
     isSingleRequestApprovalInboxEligible,
     resolveSingleRequestApprovalStage,
@@ -297,7 +298,6 @@ const buildSingleRequestListQuery = whereClause => `SELECT
                     LEFT JOIN mst_user u ON u.user_id = r.created_by
                     LEFT JOIN mat_item_group mig ON mig.id = r.material_group_id
                     LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
-                    LEFT JOIN mst_user u ON u.user_id = r.created_by
                     LEFT JOIN mat_single_request_attachment att ON att.request_id = r.id
                     WHERE ${whereClause}
                     GROUP BY
@@ -341,6 +341,12 @@ const GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY = `SELECT
                             r.approval_1_status = 'APPROVED'
                             AND COALESCE(r.approval_2_status, 'WAITING') = 'WAITING'
                         )
+                        OR (
+                            r.approval_1_status = 'APPROVED'
+                            AND r.approval_2_status = 'APPROVED'
+                            AND COALESCE(r.approval_3_status, 'WAITING') = 'WAITING'
+                        )
+                        OR UPPER(COALESCE(r.status, '')) IN ('DONE', 'REWORK', 'REJECT', 'REJECTED', 'CANCEL')
                     )
                     ORDER BY r.created_at DESC, r.id DESC`;
 
@@ -3764,25 +3770,11 @@ const Material = {
     getSingleRequestApprovalInbox: async (actorUserId, actorUsername) => {
         try {
             return await DBClientWrapper(async client => {
-                const isAdmin = isAdminMaterialApprover(actorUsername);
-
                 const result = await client.query(GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY);
 
-                return result.rows.filter(row => {
-                    const stage = resolveSingleRequestApprovalStage(row);
-                    if (!["Approval 1", "Approval 2"].includes(stage)) {
-                        return false;
-                    }
-                    if (isAdmin) {
-                        return true;
-                    }
-                    if (stage === "Approval 1") {
-                        return String(row.approval_1_user_id) === String(actorUserId);
-                    }
-                    if (stage === "Approval 2") {
-                        return String(row.approval_2_user_id) === String(actorUserId);
-                    }
-                    return false;
+                return filterSingleRequestApprovalInboxRows(result.rows, {
+                    actorUserId,
+                    actorUsername,
                 });
             });
         } catch (error) {

@@ -291,3 +291,24 @@ test("approval inbox admin sees all eligible rows regardless of active stage", (
     [10, 11]
   );
 });
+
+test("getSingleRequestApprovalInbox query includes Approval 3 waiting rows", () => {
+  assert.match(
+    Material.__private.GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY,
+    /approval_2_status = 'APPROVED'[\s\S]*COALESCE\(r\.approval_3_status, 'WAITING'\) = 'WAITING'/i
+  );
+});
+
+test("getSingleRequestApprovalInbox query keeps final list statuses for filtering", () => {
+  assert.match(
+    Material.__private.GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY,
+    /UPPER\(COALESCE\(r\.status, ''\)\) IN \('DONE', 'REWORK', 'REJECT', 'REJECTED', 'CANCEL'\)/i
+  );
+});
+
+test("getSingleRequestApprovalInbox delegates row filtering to shared helper", () => {
+  assert.match(
+    Material.getSingleRequestApprovalInbox.toString(),
+    /filterSingleRequestApprovalInboxRows/
+  );
+});
