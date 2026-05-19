@@ -101,6 +101,11 @@ const pickApproval3Candidate = ({
 const isAdminMaterialApprover = username =>
     normalizeUsername(username) === ADMIN_APPROVER_USERNAME;
 
+const matchesActorUserId = (assigneeUserId, actorUserId) =>
+    assigneeUserId != null &&
+    actorUserId != null &&
+    String(assigneeUserId) === String(actorUserId);
+
 const resolveSingleRequestApprovalStage = (approval = {}) => {
     const approval1Status = normalizeApprovalStatus(approval.approval_1_status);
     const approval2Status = normalizeApprovalStatus(approval.approval_2_status);
@@ -152,6 +157,28 @@ const isSingleRequestApprovalInboxEligible = (approval = {}) =>
         resolveSingleRequestApprovalStage(approval)
     );
 
+const canActorApproveSingleRequestStage = ({
+    approval = {},
+    actorUserId,
+    actorUsername,
+} = {}) => {
+    if (isAdminMaterialApprover(actorUsername)) {
+        return true;
+    }
+
+    const stage = resolveSingleRequestApprovalStage(approval);
+
+    if (stage === "Approval 1") {
+        return matchesActorUserId(approval.approval_1_user_id, actorUserId);
+    }
+
+    if (stage === "Approval 2") {
+        return matchesActorUserId(approval.approval_2_user_id, actorUserId);
+    }
+
+    return false;
+};
+
 const getUniqueGroupNames = rows => {
     const names = rows
         .map(row => row.user_group_name)
@@ -192,16 +219,53 @@ const buildInitialSingleRequestApproval = ({ requestId, requesterUserId }) => {
     };
 };
 
-const buildAutoApprovedApproval3 = ({ approval3UserId }) => {
+const buildRequesterApprovalMaster = ({
+    requesterUserId,
+    approval1UserId = null,
+    approval2UserId = null,
+} = {}) => {
+    if (!requesterUserId) {
+        throw new Error("requesterUserId is required");
+    }
+
+    return {
+        requester_user_id: requesterUserId,
+        approval_1_user_id: normalizeAssigneeValue(approval1UserId),
+        approval_2_user_id: normalizeAssigneeValue(approval2UserId),
+        approval_3_type: "SYSTEM",
+        approval_3_group: MDM_MATERIAL_GROUP_NAME,
+    };
+};
+
+const buildSingleRequestApprovalSnapshot = ({
+    requesterUserId,
+    approvalMaster,
+} = {}) => ({
+    requester_user_id: requesterUserId,
+    approval_1_user_id: normalizeAssigneeValue(approvalMaster?.approval_1_user_id),
+    approval_1_status: INITIAL_APPROVAL_STATUS,
+    approval_1_at: null,
+    approval_1_remark: null,
+    approval_2_user_id: normalizeAssigneeValue(approvalMaster?.approval_2_user_id),
+    approval_2_status: null,
+    approval_2_at: null,
+    approval_2_remark: null,
+    approval_3_user_id: null,
+    approval_3_status: null,
+    approval_3_at: null,
+    approval_3_remark: null,
+});
+
+const buildAutoAssignedApproval3 = ({ approval3UserId }) => {
     if (!approval3UserId) {
         throw new Error("approval3UserId is required");
     }
 
     return {
         approval_3_user_id: approval3UserId,
-        approval_3_status: "APPROVED",
-        assigned_to: COMPLETED_SINGLE_REQUEST_ASSIGNMENT,
-        next_stage: COMPLETED_SINGLE_REQUEST_ASSIGNMENT,
+        approval_3_status: INITIAL_APPROVAL_STATUS,
+        assigned_to: "Approval 3",
+        next_stage: "Approval 3",
     };
 };
 
@@ -305,9 +369,12 @@ module.exports = {
     INITIAL_APPROVAL_STATUS,
     MDM_MATERIAL_GROUP_NAME,
     buildAdministratorAssignmentDecision,
-    buildAutoApprovedApproval3,
+    buildAutoAssignedApproval3,
     buildInitialSingleRequestApproval,
+    buildRequesterApprovalMaster,
+    buildSingleRequestApprovalSnapshot,
     buildLoginUserGroupInfo,
+    canActorApproveSingleRequestStage,
     canEditApprovalAssignee,
     isAdminMaterialApprover,
     isSingleRequestApprovalInboxEligible,

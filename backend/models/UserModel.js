@@ -461,7 +461,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                     delete: item.fdelete,
                 };
             });
-            authPerm = buildMaterialSidebarPermission(authPerm);
+            authPerm = buildMaterialSidebarPermission(authPerm, username);
             if (!userData.rows[0].is_active) {
                 throw new Error("User is inactive");
             }
@@ -659,7 +659,10 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                         delete: item.fdelete,
                     };
                 });
-                authPerm = buildMaterialSidebarPermission(authPerm);
+                authPerm = buildMaterialSidebarPermission(
+                    authPerm,
+                    user.username
+                );
                 if (user.role === "VENDOR") {
                     // IF USER VENDOR, CHECK RESET PASS
                     // SELECT IS_RESET_PWD

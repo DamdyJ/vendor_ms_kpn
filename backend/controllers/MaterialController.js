@@ -1614,14 +1614,10 @@ const MaterialController = {
 
     getSingleRequestApprovalInbox: async (req, res) => {
         try {
-            if (!isAdminMaterialApprover(req.cookies?.username)) {
-                return res.status(403).json({
-                    success: false,
-                    message: "Forbidden: approval inbox is only available for ADMIN",
-                });
-            }
+            const actorUsername = req.cookies?.username;
+            const actorUserId = req.cookies?.user_id;
 
-            const rows = await Material.getSingleRequestApprovalInbox();
+            const rows = await Material.getSingleRequestApprovalInbox(actorUserId, actorUsername);
 
             return res.status(200).json({
                 success: true,
@@ -1639,14 +1635,6 @@ const MaterialController = {
 
     approveSingleRequest: async (req, res) => {
         try {
-            if (!isAdminMaterialApprover(req.cookies?.username)) {
-                return res.status(403).json({
-                    success: false,
-                    message:
-                        "Forbidden: single request approval is only available for ADMIN",
-                });
-            }
-
             const result = await Material.approveSingleRequestByAdmin({
                 requestId: req.params.id,
                 actorUserId: req.cookies.user_id,
@@ -1742,6 +1730,69 @@ const MaterialController = {
             return res.status(statusCode).json({
                 success: false,
                 message,
+            });
+        }
+    },
+
+    getSingleRequestApproverMasters: async (req, res) => {
+        try {
+            if (!isAdminMaterialApprover(req.cookies?.username)) {
+                return res.status(403).json({ success: false, message: "Forbidden" });
+            }
+
+            const rows = await Material.getAdministratorApproverMasters();
+            return res.status(200).json({ success: true, data: rows });
+        } catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to fetch requester approver masters",
+                error: error.message,
+            });
+        }
+    },
+
+    assignSingleRequestApproverMaster: async (req, res) => {
+        try {
+            if (!isAdminMaterialApprover(req.cookies?.username)) {
+                return res.status(403).json({ success: false, message: "Forbidden" });
+            }
+
+            const assignmentPayload = {
+                requesterUserId: req.params.requesterUserId,
+                actorUsername: req.cookies.username,
+            };
+
+            if (
+                Object.prototype.hasOwnProperty.call(
+                    req.body || {},
+                    "approval1UserId"
+                )
+            ) {
+                assignmentPayload.approval1UserId = req.body.approval1UserId;
+            }
+
+            if (
+                Object.prototype.hasOwnProperty.call(
+                    req.body || {},
+                    "approval2UserId"
+                )
+            ) {
+                assignmentPayload.approval2UserId = req.body.approval2UserId;
+            }
+
+            const result = await Material.updateAdministratorApproverMaster(
+                assignmentPayload
+            );
+
+            return res.status(200).json({
+                success: true,
+                message: "Requester approver master saved successfully",
+                data: result,
+            });
+        } catch (error) {
+            return res.status(error.statusCode || 500).json({
+                success: false,
+                message: error.message || "Failed to save requester approver master",
             });
         }
     },

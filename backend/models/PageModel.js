@@ -58,6 +58,7 @@ PageModel.showAll = async (role_id, username) => {
                 key: item.menu_id,
                 text: item.page,
                 icon: item.icon,
+                url: item.url_link || "",
                 access: [item.fcreate, item.fread, item.fupdate, item.fdelete],
                 children: childMenu,
             });

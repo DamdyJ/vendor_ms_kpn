@@ -155,6 +155,16 @@ router.get(
     AuthToken.authSession,
     MaterialController.getSingleRequestApprovalInbox
 );
+router.get(
+    "/requests/single/approver-masters",
+    AuthToken.authSession,
+    MaterialController.getSingleRequestApproverMasters
+);
+router.patch(
+    "/requests/single/approver-masters/:requesterUserId",
+    AuthToken.authSession,
+    MaterialController.assignSingleRequestApproverMaster
+);
 router.patch(
     "/requests/single/:id/assign-approvers",
     AuthToken.authSession,

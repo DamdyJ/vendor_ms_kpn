@@ -15,8 +15,12 @@ const {
     INITIAL_APPROVAL_STATUS,
     MDM_MATERIAL_GROUP_NAME,
     buildAdministratorAssignmentDecision,
-    buildAutoApprovedApproval3,
+    buildAutoAssignedApproval3,
     buildInitialSingleRequestApproval,
+    buildRequesterApprovalMaster,
+    buildSingleRequestApprovalSnapshot,
+    canActorApproveSingleRequestStage,
+    canEditApprovalAssignee,
     isAdminMaterialApprover,
     isSingleRequestApprovalInboxEligible,
     resolveSingleRequestApprovalStage,
@@ -162,6 +166,48 @@ const updateSingleRequestAssignment = async (client, requestId, assignedTo) => {
     );
 };
 
+const syncSingleRequestApprovalSnapshot = async (
+    client,
+    requestId,
+    approval = {},
+    assignedTo
+) => {
+    await client.query(
+        `UPDATE mat_single_request
+        SET assigned_to = $2,
+            approval_1_user_id = $3,
+            approval_1_status = $4,
+            approval_1_at = $5,
+            approval_1_remark = $6,
+            approval_2_user_id = $7,
+            approval_2_status = $8,
+            approval_2_at = $9,
+            approval_2_remark = $10,
+            approval_3_user_id = $11,
+            approval_3_status = $12,
+            approval_3_at = $13,
+            approval_3_remark = $14,
+            updated_at = NOW()
+        WHERE id = $1`,
+        [
+            requestId,
+            assignedTo ?? null,
+            approval.approval_1_user_id ?? null,
+            approval.approval_1_status ?? null,
+            approval.approval_1_at ?? null,
+            approval.approval_1_remark ?? null,
+            approval.approval_2_user_id ?? null,
+            approval.approval_2_status ?? null,
+            approval.approval_2_at ?? null,
+            approval.approval_2_remark ?? null,
+            approval.approval_3_user_id ?? null,
+            approval.approval_3_status ?? null,
+            approval.approval_3_at ?? null,
+            approval.approval_3_remark ?? null,
+        ]
+    );
+};
+
 const queryUsersWithPageAccessByIds = async (client, userIds) => {
     const uniqueUserIds = [...new Set(userIds.filter(Boolean))];
 
@@ -257,19 +303,19 @@ const SINGLE_REQUEST_SELECT_FIELDS = `r.id,
                         r.long_text_3,
                         r.template_payload,
                         r.status,
-                        a.requester_user_id,
-                        a.approval_1_user_id,
-                        a.approval_1_status,
-                        TO_CHAR(a.approval_1_at, 'YYYY-MM-DD HH24:MI') AS approval_1_at,
-                        a.approval_1_remark,
-                        a.approval_2_user_id,
-                        a.approval_2_status,
-                        TO_CHAR(a.approval_2_at, 'YYYY-MM-DD HH24:MI') AS approval_2_at,
-                        a.approval_2_remark,
-                        a.approval_3_status,
-                        a.approval_3_user_id,
-                        TO_CHAR(a.approval_3_at, 'YYYY-MM-DD HH24:MI') AS approval_3_at,
-                        a.approval_3_remark,
+                        r.created_by AS requester_user_id,
+                        r.approval_1_user_id,
+                        r.approval_1_status,
+                        TO_CHAR(r.approval_1_at, 'YYYY-MM-DD HH24:MI') AS approval_1_at,
+                        r.approval_1_remark,
+                        r.approval_2_user_id,
+                        r.approval_2_status,
+                        TO_CHAR(r.approval_2_at, 'YYYY-MM-DD HH24:MI') AS approval_2_at,
+                        r.approval_2_remark,
+                        r.approval_3_status,
+                        r.approval_3_user_id,
+                        TO_CHAR(r.approval_3_at, 'YYYY-MM-DD HH24:MI') AS approval_3_at,
+                        r.approval_3_remark,
                         COALESCE(u.username, r.created_by) AS created_by,
                         TO_CHAR(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
                         r.assigned_to,
@@ -290,26 +336,11 @@ const SINGLE_REQUEST_GROUP_BY = `r.id,
                         mig.name,
                         mis.code,
                         mis.name,
-                        a.requester_user_id,
-                        a.approval_1_user_id,
-                        a.approval_1_status,
-                        a.approval_1_at,
-                        a.approval_1_remark,
-                        a.approval_2_user_id,
-                        a.approval_2_status,
-                        a.approval_2_at,
-                        a.approval_2_remark,
-                        a.approval_3_user_id,
-                        a.approval_3_status,
-                        a.approval_3_at,
-                        a.approval_3_remark,
                         u.username`;
 
 const buildSingleRequestListQuery = whereClause => `SELECT
                         ${SINGLE_REQUEST_SELECT_FIELDS}
                     FROM mat_single_request r
-                    LEFT JOIN mat_single_request_approval a
-                        ON a.request_id = r.id
                     LEFT JOIN mst_user u ON u.user_id = r.created_by
                     LEFT JOIN mat_item_group mig ON mig.code = r.material_group_code
                     LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
@@ -318,6 +349,28 @@ const buildSingleRequestListQuery = whereClause => `SELECT
                     GROUP BY
                         ${SINGLE_REQUEST_GROUP_BY}
                     ORDER BY r.created_at DESC, r.id DESC`;
+
+const GET_ADMINISTRATOR_APPROVER_MASTERS_QUERY = `SELECT
+        u.user_id AS requester_user_id,
+        u.username AS requester_username,
+        a.approval_1_user_id,
+        a.approval_2_user_id,
+        a.approval_3_type,
+        a.approval_3_group,
+        COALESCE(active_requests.active_request_count, 0) AS active_request_count
+    FROM mst_user u
+    LEFT JOIN mat_single_request_approval a
+        ON a.requester_user_id = u.user_id
+    LEFT JOIN (
+        SELECT created_by AS requester_user_id, COUNT(*) AS active_request_count
+        FROM mat_single_request
+        WHERE NOT (
+            UPPER(COALESCE(approval_3_status, '')) = 'APPROVED'
+            OR UPPER(COALESCE(status, '')) IN ('REJECT', 'REJECTED')
+        )
+        GROUP BY created_by
+    ) active_requests
+        ON active_requests.requester_user_id = u.user_id`;
 
 const Material = {
     // Create a new material group
@@ -3111,14 +3164,13 @@ const Material = {
                         );
                     }
 
-                    const autoApprovedApproval3 = buildAutoApprovedApproval3({
+                    const autoAssignedApproval3 = buildAutoAssignedApproval3({
                         approval3UserId: mdmUser.user_id,
                     });
 
                     const approvalResult = await client.query(
                         `UPDATE mat_single_request_approval
                         SET approval_3_user_id = $2,
-                            approval_3_at = NOW(),
                             approval_3_status = $3,
                             updated_at = NOW()
                         WHERE request_id = $1
@@ -3128,14 +3180,22 @@ const Material = {
                         RETURNING
                             request_id,
                             requester_user_id,
+                            approval_1_user_id,
                             approval_1_status,
+                            approval_1_at,
+                            approval_1_remark,
+                            approval_2_user_id,
                             approval_2_status,
+                            approval_2_at,
+                            approval_2_remark,
                             approval_3_user_id,
-                            approval_3_status`,
+                            approval_3_status,
+                            approval_3_at,
+                            approval_3_remark`,
                         [
                             requestId,
-                            autoApprovedApproval3.approval_3_user_id,
-                            autoApprovedApproval3.approval_3_status,
+                            autoAssignedApproval3.approval_3_user_id,
+                            autoAssignedApproval3.approval_3_status,
                         ]
                     );
 
@@ -3147,10 +3207,11 @@ const Material = {
                         );
                     }
 
-                    await updateSingleRequestAssignment(
+                    await syncSingleRequestApprovalSnapshot(
                         client,
                         requestId,
-                        autoApprovedApproval3.assigned_to
+                        approvalResult.rows[0],
+                        autoAssignedApproval3.assigned_to
                     );
 
                     await client.query("COMMIT");
@@ -3273,10 +3334,16 @@ const Material = {
                             requester_user_id,
                             approval_1_user_id,
                             approval_1_status,
+                            approval_1_at,
+                            approval_1_remark,
                             approval_2_user_id,
                             approval_2_status,
+                            approval_2_at,
+                            approval_2_remark,
                             approval_3_user_id,
-                            approval_3_status`,
+                            approval_3_status,
+                            approval_3_at,
+                            approval_3_remark`,
                         [
                             requestId,
                             decision.approval_1_user_id,
@@ -3300,16 +3367,12 @@ const Material = {
                             ? decision.assigned_to
                             : snapshot.assigned_to;
 
-                    if (
-                        decision.assigned_to &&
-                        decision.assigned_to !== snapshot.assigned_to
-                    ) {
-                        await updateSingleRequestAssignment(
-                            client,
-                            requestId,
-                            decision.assigned_to
-                        );
-                    }
+                    await syncSingleRequestApprovalSnapshot(
+                        client,
+                        requestId,
+                        approvalResult.rows[0],
+                        nextAssignedTo
+                    );
 
                     await client.query("COMMIT");
 
@@ -3338,14 +3401,6 @@ const Material = {
         remark,
     }) => {
         try {
-            if (!isAdminMaterialApprover(actorUsername)) {
-                throw buildSingleRequestApprovalError(
-                    "Forbidden: single request approval is only available for ADMIN",
-                    403,
-                    "SINGLE_REQUEST_APPROVAL_FORBIDDEN"
-                );
-            }
-
             return await DBClientWrapper(async client => {
                 await client.query("BEGIN");
 
@@ -3367,6 +3422,20 @@ const Material = {
                         );
                     }
 
+                    if (
+                        !canActorApproveSingleRequestStage({
+                            approval: snapshot,
+                            actorUserId,
+                            actorUsername,
+                        })
+                    ) {
+                        throw buildSingleRequestApprovalError(
+                            "Forbidden: only the assigned approver or ADMIN can approve this request",
+                            403,
+                            "SINGLE_REQUEST_APPROVAL_FORBIDDEN"
+                        );
+                    }
+
                     if (activeStage === "Approval 1") {
                         const approvalResult = await client.query(
                             `UPDATE mat_single_request_approval
@@ -3377,7 +3446,21 @@ const Material = {
                                 updated_at = NOW()
                             WHERE request_id = $1
                                 AND COALESCE(approval_1_status, 'WAITING') = 'WAITING'
-                            RETURNING request_id`,
+                            RETURNING
+                                request_id,
+                                requester_user_id,
+                                approval_1_user_id,
+                                approval_1_status,
+                                approval_1_at,
+                                approval_1_remark,
+                                approval_2_user_id,
+                                approval_2_status,
+                                approval_2_at,
+                                approval_2_remark,
+                                approval_3_user_id,
+                                approval_3_status,
+                                approval_3_at,
+                                approval_3_remark`,
                             [requestId, actorUserId, safeRemark]
                         );
 
@@ -3389,9 +3472,10 @@ const Material = {
                             );
                         }
 
-                        await updateSingleRequestAssignment(
+                        await syncSingleRequestApprovalSnapshot(
                             client,
                             requestId,
+                            approvalResult.rows[0],
                             "Approval 2"
                         );
                         await client.query("COMMIT");
@@ -3413,7 +3497,7 @@ const Material = {
                         );
                     }
 
-                    const autoApprovedApproval3 = buildAutoApprovedApproval3({
+                    const autoAssignedApproval3 = buildAutoAssignedApproval3({
                         approval3UserId: mdmUser.user_id,
                     });
 
@@ -3424,20 +3508,33 @@ const Material = {
                             approval_2_status = 'APPROVED',
                             approval_2_remark = $3,
                             approval_3_user_id = $4,
-                            approval_3_at = NOW(),
                             approval_3_status = $5,
                             updated_at = NOW()
                         WHERE request_id = $1
                             AND approval_1_status = 'APPROVED'
                             AND COALESCE(approval_2_status, 'WAITING') = 'WAITING'
                             AND (approval_3_status IS NULL OR approval_3_status = 'WAITING')
-                        RETURNING request_id, approval_3_user_id, approval_3_status`,
+                        RETURNING
+                            request_id,
+                            requester_user_id,
+                            approval_1_user_id,
+                            approval_1_status,
+                            approval_1_at,
+                            approval_1_remark,
+                            approval_2_user_id,
+                            approval_2_status,
+                            approval_2_at,
+                            approval_2_remark,
+                            approval_3_user_id,
+                            approval_3_status,
+                            approval_3_at,
+                            approval_3_remark`,
                         [
                             requestId,
                             actorUserId,
                             safeRemark,
-                            autoApprovedApproval3.approval_3_user_id,
-                            autoApprovedApproval3.approval_3_status,
+                            autoAssignedApproval3.approval_3_user_id,
+                            autoAssignedApproval3.approval_3_status,
                         ]
                     );
 
@@ -3449,17 +3546,18 @@ const Material = {
                         );
                     }
 
-                    await updateSingleRequestAssignment(
+                    await syncSingleRequestApprovalSnapshot(
                         client,
                         requestId,
-                        autoApprovedApproval3.assigned_to
+                        approvalResult.rows[0],
+                        autoAssignedApproval3.assigned_to
                     );
                     await client.query("COMMIT");
 
                     return {
                         request_id: approvalResult.rows[0].request_id,
                         stage: "Approval 2",
-                        next_stage: autoApprovedApproval3.next_stage,
+                        next_stage: autoAssignedApproval3.next_stage,
                         approval_3_user_id:
                             approvalResult.rows[0].approval_3_user_id,
                         approval_3_status:
@@ -3502,6 +3600,16 @@ const Material = {
                         requestFields,
                         templateValues,
                     });
+                    const requesterMasterResult = await client.query(
+                        `SELECT approval_1_user_id, approval_2_user_id
+                         FROM mat_single_request_approval
+                         WHERE requester_user_id = $1`,
+                        [createdBy]
+                    );
+                    const snapshot = buildSingleRequestApprovalSnapshot({
+                        requesterUserId: createdBy,
+                        approvalMaster: requesterMasterResult.rows[0] || null,
+                    });
 
                     const insertResult = await client.query(
                         `INSERT INTO mat_single_request (
@@ -3522,9 +3630,15 @@ const Material = {
                             assigned_to,
                             created_by,
                             created_at,
-                            updated_at
+                            updated_at,
+                            approval_1_user_id,
+                            approval_1_status,
+                            approval_2_user_id,
+                            approval_2_status,
+                            approval_3_user_id,
+                            approval_3_status
                         ) VALUES (
-                            $1, $2, 'Create', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Submit', 'Approval 1', $13, NOW(), NOW()
+                            $1, $2, 'Create', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Submit', 'Approval 1', $13, NOW(), NOW(), $14, $15, $16, $17, $18, $19
                         )
                         RETURNING id, request_no, ticket_type, material_description, base_uom, status, assigned_to, created_by, created_at`,
                         [
@@ -3542,34 +3656,12 @@ const Material = {
                             requestFields.long_text_3 || null,
                             payload,
                             createdBy,
-                        ]
-                    );
-
-                    const initialApproval = buildInitialSingleRequestApproval({
-                        requestId: nextId,
-                        requesterUserId: createdBy,
-                    });
-
-                    const approvalResult = await client.query(
-                        `INSERT INTO mat_single_request_approval (
-                            request_id,
-                            requester_user_id,
-                            approval_1_status,
-                            created_at,
-                            updated_at
-                        ) VALUES ($1, $2, $3, NOW(), NOW())
-                        ON CONFLICT (request_id) DO UPDATE SET
-                            requester_user_id = EXCLUDED.requester_user_id,
-                            approval_1_status = COALESCE(
-                                mat_single_request_approval.approval_1_status,
-                                EXCLUDED.approval_1_status
-                            ),
-                            updated_at = NOW()
-                        RETURNING request_id, requester_user_id, approval_1_status`,
-                        [
-                            initialApproval.request_id,
-                            initialApproval.requester_user_id,
-                            initialApproval.approval_1_status,
+                            snapshot.approval_1_user_id,
+                            snapshot.approval_1_status,
+                            snapshot.approval_2_user_id,
+                            snapshot.approval_2_status,
+                            snapshot.approval_3_user_id,
+                            snapshot.approval_3_status,
                         ]
                     );
 
@@ -3621,7 +3713,7 @@ const Material = {
                             file_path: file.relativePath,
                             file_type: file.mimeType,
                         })),
-                        approval: approvalResult.rows[0],
+                        approval: snapshot,
                     };
                 } catch (error) {
                     await client.query("ROLLBACK");
@@ -3656,20 +3748,62 @@ const Material = {
         }
     },
 
-    getSingleRequestApprovalInbox: async () => {
+    getSingleRequestApprovalInbox: async (actorUserId, actorUsername) => {
         try {
             return await DBClientWrapper(async client => {
-                const result = await client.query(
-                    buildSingleRequestListQuery(`(
-                        COALESCE(a.approval_1_status, 'WAITING') = 'WAITING'
-                        OR (
-                            a.approval_1_status = 'APPROVED'
-                            AND COALESCE(a.approval_2_status, 'WAITING') = 'WAITING'
-                        )
-                    )`)
-                );
+                const isAdmin = isAdminMaterialApprover(actorUsername);
 
-                return result.rows.filter(isSingleRequestApprovalInboxEligible);
+                const result = await client.query(`SELECT
+                        r.id,
+                        r.request_no AS ticket_number,
+                        r.ticket_type,
+                        r.material_group_code,
+                        mig.name AS material_group_name,
+                        r.plant_code,
+                        r.sloc_code,
+                        r.material_description,
+                        r.base_uom AS uom,
+                        r.long_text_1,
+                        r.long_text_2,
+                        r.long_text_3,
+                        r.template_payload,
+                        r.status,
+                        r.created_by,
+                        TO_CHAR(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
+                        r.assigned_to,
+                        r.approval_1_user_id,
+                        r.approval_1_status,
+                        r.approval_2_user_id,
+                        r.approval_2_status,
+                        r.approval_3_user_id,
+                        r.approval_3_status
+                    FROM mat_single_request r
+                    LEFT JOIN mat_item_group mig ON mig.code = r.material_group_code
+                    WHERE (
+                        COALESCE(r.approval_1_status, 'WAITING') = 'WAITING'
+                        OR (
+                            r.approval_1_status = 'APPROVED'
+                            AND COALESCE(r.approval_2_status, 'WAITING') = 'WAITING'
+                        )
+                    )
+                    ORDER BY r.created_at DESC, r.id DESC`);
+
+                return result.rows.filter(row => {
+                    const stage = resolveSingleRequestApprovalStage(row);
+                    if (!["Approval 1", "Approval 2"].includes(stage)) {
+                        return false;
+                    }
+                    if (isAdmin) {
+                        return true;
+                    }
+                    if (stage === "Approval 1") {
+                        return String(row.approval_1_user_id) === String(actorUserId);
+                    }
+                    if (stage === "Approval 2") {
+                        return String(row.approval_2_user_id) === String(actorUserId);
+                    }
+                    return false;
+                });
             });
         } catch (error) {
             console.error(
@@ -3679,9 +3813,249 @@ const Material = {
             throw error;
         }
     },
+
+    getAdministratorApproverMasters: async () => {
+        return DBClientWrapper(async client => {
+            const result = await client.query(GET_ADMINISTRATOR_APPROVER_MASTERS_QUERY);
+            return result.rows.map(row => ({
+                requester_user_id: row.requester_user_id,
+                requester_username: row.requester_username,
+                approval_1_user_id: row.approval_1_user_id,
+                approval_2_user_id: row.approval_2_user_id,
+                approval_3_type: row.approval_3_type || "SYSTEM",
+                approval_3_group: row.approval_3_group || MDM_MATERIAL_GROUP_NAME,
+                is_locked: false,
+            }));
+        });
+    },
+
+    updateAdministratorApproverMaster: async payload => {
+        const {
+            requesterUserId,
+            approval1UserId,
+            approval2UserId,
+            actorUsername,
+        } = payload || {};
+
+        return DBClientWrapper(async client => {
+            const hasApproval1Patch = Object.prototype.hasOwnProperty.call(
+                payload || {},
+                "approval1UserId"
+            );
+            const hasApproval2Patch = Object.prototype.hasOwnProperty.call(
+                payload || {},
+                "approval2UserId"
+            );
+
+            const existingMasterResult = await client.query(
+                `SELECT approval_1_user_id, approval_2_user_id, approval_3_type, approval_3_group
+                 FROM mat_single_request_approval
+                 WHERE requester_user_id = $1`,
+                [requesterUserId]
+            );
+            const existingMaster = existingMasterResult.rows[0] || {};
+
+            const master = buildRequesterApprovalMaster({
+                requesterUserId,
+                approval1UserId: hasApproval1Patch
+                    ? approval1UserId
+                    : existingMaster.approval_1_user_id ?? null,
+                approval2UserId: hasApproval2Patch
+                    ? approval2UserId
+                    : existingMaster.approval_2_user_id ?? null,
+            });
+
+            const result = await client.query(
+                `INSERT INTO mat_single_request_approval (
+                     requester_user_id,
+                     approval_1_user_id,
+                     approval_2_user_id,
+                     approval_3_type,
+                     approval_3_group,
+                     created_at,
+                     created_by,
+                     updated_at,
+                     updated_by
+                 ) VALUES ($1, $2, $3, $4, $5, NOW(), $6, NOW(), $6)
+                 ON CONFLICT (requester_user_id) DO UPDATE SET
+                     approval_1_user_id = EXCLUDED.approval_1_user_id,
+                     approval_2_user_id = EXCLUDED.approval_2_user_id,
+                     updated_at = NOW(),
+                     updated_by = EXCLUDED.updated_by
+                 RETURNING *`,
+                [
+                    master.requester_user_id,
+                    master.approval_1_user_id,
+                    master.approval_2_user_id,
+                    master.approval_3_type,
+                    master.approval_3_group,
+                    actorUsername,
+                ]
+            );
+
+            const activeRequestResult = await client.query(
+                `SELECT
+                     id AS request_id,
+                     assigned_to,
+                     created_by,
+                     status,
+                     created_by AS requester_user_id,
+                     approval_1_user_id,
+                     approval_1_at,
+                     approval_1_status,
+                     approval_1_remark,
+                     approval_2_user_id,
+                     approval_2_at,
+                     approval_2_status,
+                     approval_2_remark,
+                     approval_3_user_id,
+                     approval_3_at,
+                     approval_3_status,
+                     approval_3_remark
+                 FROM mat_single_request
+                 WHERE created_by = $1
+                   AND NOT (
+                       UPPER(COALESCE(approval_3_status, '')) = 'APPROVED'
+                       OR UPPER(COALESCE(status, '')) IN ('REJECT', 'REJECTED')
+                   )
+                 ORDER BY created_at DESC, id DESC
+                 FOR UPDATE`,
+                [requesterUserId]
+            );
+
+            if (activeRequestResult.rows.length > 0) {
+                const activeSnapshots = activeRequestResult.rows;
+                const manualUsersById = await queryUsersWithPageAccessByIds(
+                    client,
+                    [
+                        master.approval_1_user_id,
+                        master.approval_2_user_id,
+                        ...activeSnapshots.flatMap(snapshot => [
+                            snapshot.approval_1_user_id,
+                            snapshot.approval_2_user_id,
+                        ]),
+                    ]
+                );
+                const approval3Users = await queryActiveMdmMaterialUsers(client);
+                const usersById = approval3Users.reduce(
+                    (allUsersById, user) => {
+                        allUsersById[user.user_id] = user;
+                        return allUsersById;
+                    },
+                    { ...manualUsersById }
+                );
+
+                for (const snapshot of activeSnapshots) {
+                    const patch = {};
+
+                    if (
+                        hasApproval1Patch &&
+                        canEditApprovalAssignee(snapshot.approval_1_status)
+                    ) {
+                        patch.approval_1_user_id = master.approval_1_user_id;
+                    }
+
+                    if (
+                        hasApproval2Patch &&
+                        canEditApprovalAssignee(snapshot.approval_2_status)
+                    ) {
+                        patch.approval_2_user_id = master.approval_2_user_id;
+                    }
+
+                    if (Object.keys(patch).length === 0) {
+                        continue;
+                    }
+
+                    let decision;
+
+                    try {
+                        decision = buildAdministratorAssignmentDecision({
+                            snapshot,
+                            patch,
+                            usersById,
+                            approval3Candidates: approval3Users.map(
+                                user => user.user_id
+                            ),
+                            randomIndex: approval3Users.length
+                                ? Math.floor(
+                                      Math.random() * approval3Users.length
+                                  )
+                                : 0,
+                        });
+                    } catch (error) {
+                        throw buildSingleRequestApprovalError(
+                            error.message,
+                            409,
+                            "REQUESTER_APPROVER_MASTER_ACTIVE_REQUEST_CONFLICT"
+                        );
+                    }
+
+                    const approval3Status = decision.approval_3_user_id
+                        ? snapshot.approval_3_status || INITIAL_APPROVAL_STATUS
+                        : snapshot.approval_3_status;
+
+                    const nextApprovalSnapshot = {
+                        ...snapshot,
+                        requester_user_id:
+                            snapshot.requester_user_id ?? snapshot.created_by,
+                        approval_1_user_id: decision.approval_1_user_id,
+                        approval_2_user_id: decision.approval_2_user_id,
+                        approval_3_user_id: decision.approval_3_user_id,
+                        approval_3_status: approval3Status,
+                    };
+
+                    const nextAssignedTo =
+                        decision.assigned_to && decision.assigned_to !== snapshot.assigned_to
+                            ? decision.assigned_to
+                            : snapshot.assigned_to;
+
+                    await syncSingleRequestApprovalSnapshot(
+                        client,
+                        snapshot.request_id,
+                        nextApprovalSnapshot,
+                        nextAssignedTo
+                    );
+                }
+            }
+
+            return {
+                ...result.rows[0],
+                is_locked: false,
+            };
+        });
+    },
 };
 
 Material.__private = {
+    CREATE_SINGLE_REQUEST_INSERT_QUERY: `INSERT INTO mat_single_request (
+                            id,
+                            request_no,
+                            ticket_type,
+                            material_group_code,
+                            material_sub_group_id,
+                            plant_code,
+                            sloc_code,
+                            material_description,
+                            base_uom,
+                            long_text_1,
+                            long_text_2,
+                            long_text_3,
+                            template_payload,
+                            status,
+                            assigned_to,
+                            created_by,
+                            created_at,
+                            updated_at,
+                            approval_1_user_id,
+                            approval_1_status,
+                            approval_2_user_id,
+                            approval_2_status,
+                            approval_3_user_id,
+                            approval_3_status
+                        )`,
+    GET_SINGLE_REQUEST_LIST_QUERY: buildSingleRequestListQuery("r.created_by = $1"),
+    GET_ADMINISTRATOR_APPROVER_MASTERS_QUERY,
+    GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY: `SELECT ... FROM mat_single_request r`,
     assertSingleRequestAssignableStatus,
     buildSingleRequestApproverAssignmentPatch,
     INITIAL_SINGLE_REQUEST_APPROVAL_INSERT_QUERY,
