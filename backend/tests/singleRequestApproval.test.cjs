@@ -5,6 +5,8 @@ const MaterialController = require("../controllers/MaterialController");
 const {
   buildRequesterApprovalMaster,
   buildSingleRequestApprovalSnapshot,
+  filterSingleRequestApprovalInboxRows,
+  isSingleRequestApprovalInboxEligible,
 } = require("../helper/singleRequestApproval");
 
 test("buildRequesterApprovalMaster returns requester-based master data", () => {
@@ -97,6 +99,15 @@ test("getSingleRequests list query reads group code through the id join", () => 
     Material.__private.GET_SINGLE_REQUEST_LIST_QUERY,
     /mig\.code AS material_group_code/i
   );
+});
+
+test("getSingleRequests list query joins mst_user only once", () => {
+  const joinMatches =
+    Material.__private.GET_SINGLE_REQUEST_LIST_QUERY.match(
+      /LEFT JOIN mst_user u ON u\.user_id = r\.created_by/gi
+    ) || [];
+
+  assert.equal(joinMatches.length, 1);
 });
 
 test("approval assignment workflow syncs mat_single_request snapshot", () => {
@@ -196,5 +207,87 @@ test("createSingleRequest controller validates subgroup membership with item_gro
   assert.doesNotMatch(
     MaterialController.createSingleRequest.toString(),
     /subgroup\.group_code[\s\S]*materialGroupCode/
+  );
+});
+
+test("approval inbox eligibility includes Approval 3 waiting rows", () => {
+  assert.equal(
+    isSingleRequestApprovalInboxEligible({
+      approval_1_status: "APPROVED",
+      approval_2_status: "APPROVED",
+      approval_3_status: "WAITING",
+      status: "Submit",
+    }),
+    true
+  );
+});
+
+test("approval inbox keeps final status rows for admin dataset", () => {
+  assert.equal(
+    isSingleRequestApprovalInboxEligible({
+      approval_1_status: "APPROVED",
+      approval_2_status: "APPROVED",
+      approval_3_status: "APPROVED",
+      status: "Done",
+    }),
+    true
+  );
+});
+
+test("approval inbox filters Approval 3 rows by approval_3_user_id for non-admin users", () => {
+  const rows = [
+    {
+      id: 1,
+      status: "Submit",
+      approval_1_status: "APPROVED",
+      approval_2_status: "APPROVED",
+      approval_3_status: "WAITING",
+      approval_3_user_id: "MDM-01",
+    },
+    {
+      id: 2,
+      status: "Submit",
+      approval_1_status: "APPROVED",
+      approval_2_status: "APPROVED",
+      approval_3_status: "WAITING",
+      approval_3_user_id: "MDM-02",
+    },
+  ];
+
+  assert.deepEqual(
+    filterSingleRequestApprovalInboxRows(rows, {
+      actorUserId: "MDM-01",
+      actorUsername: "mdm.user",
+    }).map(row => row.id),
+    [1]
+  );
+});
+
+test("approval inbox admin sees all eligible rows regardless of active stage", () => {
+  const rows = [
+    {
+      id: 10,
+      status: "Submit",
+      approval_1_status: "WAITING",
+      approval_2_status: null,
+      approval_3_status: null,
+      approval_1_user_id: "APP-1",
+    },
+    {
+      id: 11,
+      status: "Done",
+      approval_1_status: "APPROVED",
+      approval_2_status: "APPROVED",
+      approval_3_status: "APPROVED",
+      approval_3_user_id: "MDM-01",
+    },
+  ];
+
+  assert.deepEqual(
+    filterSingleRequestApprovalInboxRows(rows, {
+      actorUserId: "ADMIN-01",
+      actorUsername: "ADMIN",
+    }).map(row => row.id),
+    [10, 11]
   );
 });

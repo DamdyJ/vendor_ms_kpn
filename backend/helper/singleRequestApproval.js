@@ -153,9 +153,46 @@ const resolveSingleRequestHeaderAssignment = (approval = {}) => {
 };
 
 const isSingleRequestApprovalInboxEligible = (approval = {}) =>
-    ["Approval 1", "Approval 2"].includes(
-        resolveSingleRequestApprovalStage(approval)
+    Boolean(resolveSingleRequestApprovalStage(approval)) ||
+    isRequestStatusVisibleInApprovalList(approval.status);
+
+const isRequestStatusVisibleInApprovalList = status =>
+    ["SUBMIT", "REWORK", "REJECT", "REJECTED", "CANCEL", "DONE"].includes(
+        normalizeUsername(status)
     );
+
+const filterSingleRequestApprovalInboxRows = (
+    rows = [],
+    { actorUserId, actorUsername } = {}
+) => {
+    const isAdmin = isAdminMaterialApprover(actorUsername);
+
+    return rows.filter(row => {
+        if (!isSingleRequestApprovalInboxEligible(row)) {
+            return false;
+        }
+
+        if (isAdmin) {
+            return true;
+        }
+
+        const stage = resolveSingleRequestApprovalStage(row);
+
+        if (stage === "Approval 1") {
+            return matchesActorUserId(row.approval_1_user_id, actorUserId);
+        }
+
+        if (stage === "Approval 2") {
+            return matchesActorUserId(row.approval_2_user_id, actorUserId);
+        }
+
+        if (stage === "Approval 3") {
+            return matchesActorUserId(row.approval_3_user_id, actorUserId);
+        }
+
+        return false;
+    });
+};
 
 const canActorApproveSingleRequestStage = ({
     approval = {},
@@ -376,7 +413,9 @@ module.exports = {
     buildLoginUserGroupInfo,
     canActorApproveSingleRequestStage,
     canEditApprovalAssignee,
+    filterSingleRequestApprovalInboxRows,
     isAdminMaterialApprover,
+    isRequestStatusVisibleInApprovalList,
     isSingleRequestApprovalInboxEligible,
     normalizeApprovalStatus,
     normalizeUsername,
