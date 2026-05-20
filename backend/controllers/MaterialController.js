@@ -1646,6 +1646,7 @@ const MaterialController = {
                 actorUserId: req.cookies.user_id,
                 actorUsername: req.cookies.username,
                 remark: req.body?.remark ?? null,
+                editedRequest: req.body?.editedRequest ?? null,
             });
 
             return res.status(200).json({

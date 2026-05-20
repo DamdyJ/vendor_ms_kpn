@@ -10,6 +10,7 @@ const pool = require("../config/connection");
 const wmsPool = require("../config/wmsconnection");
 const saveToDatabase = require("../helper/sap_seeding");
 const Emailer = require("../models/EmailModel.js");
+const MaterialTemplate = require("../models/MaterialTemplateModel");
 const TRANS = require("../config/transaction.js");
 const {
     INITIAL_APPROVAL_STATUS,
@@ -33,11 +34,130 @@ const buildSingleRequestApprovalError = (message, statusCode, code) => {
     return error;
 };
 
+const SINGLE_REQUEST_EDITABLE_FIELDS = [
+    "material_sub_group_id",
+    "plant_code",
+    "sloc_code",
+    "material_description",
+    "base_uom",
+    "long_text_1",
+    "long_text_2",
+    "long_text_3",
+    "template_payload",
+];
+
+const SINGLE_REQUEST_LONG_TEXT_FIELD_KEYS = [
+    "long_text_1",
+    "long_text_2",
+    "long_text_3",
+];
+
+const SINGLE_REQUEST_NON_FORM_FIELD_KEYS = new Set([
+    "profit_center",
+    "sales_organization",
+    "distribution_channel",
+    "valuation_class",
+    "valuation_class_project_stock",
+]);
+
+const SINGLE_REQUEST_REQUEST_FIELD_ALIASES = {
+    base_uom: "base_unit_of_measure",
+    storageLocation: "storage_location",
+    longText1: "long_text_1",
+    longText2: "long_text_2",
+    longText3: "long_text_3",
+};
+
+const normalizeSingleRequestEditableValue = (field, value) => {
+    if (field === "template_payload") {
+        return value == null ? null : JSON.stringify(value);
+    }
+
+    return value ?? null;
+};
+
+const normalizeSingleRequestRequestFields = payload => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return {};
+    }
+
+    const normalized = { ...payload };
+
+    for (const [legacyKey, canonicalKey] of Object.entries(
+        SINGLE_REQUEST_REQUEST_FIELD_ALIASES
+    )) {
+        if (
+            normalized[canonicalKey] === undefined &&
+            normalized[legacyKey] !== undefined
+        ) {
+            normalized[canonicalKey] = normalized[legacyKey];
+        }
+    }
+
+    return normalized;
+};
+
+const buildNormalizedApprovalEditRequestFields = ({
+    requestFields = {},
+    validation = {},
+}) => {
+    const normalizedRequestFields = validation.normalizedRequestFields || {};
+    const normalized = {
+        ...normalizedRequestFields,
+        material_description:
+            requestFields.material_description ||
+            validation.materialDescription ||
+            normalizedRequestFields.material_description,
+        storage_location:
+            requestFields.storage_location ||
+            requestFields.storageLocation ||
+            null,
+        plant: requestFields.plant || null,
+    };
+
+    for (const fieldKey of SINGLE_REQUEST_LONG_TEXT_FIELD_KEYS) {
+        if (
+            requestFields[fieldKey] !== undefined &&
+            requestFields[fieldKey] !== null
+        ) {
+            normalized[fieldKey] = requestFields[fieldKey];
+        }
+    }
+
+    if (
+        requestFields.base_unit_of_measure !== undefined &&
+        requestFields.base_unit_of_measure !== null
+    ) {
+        normalized.base_unit_of_measure = requestFields.base_unit_of_measure;
+    }
+
+    if (
+        requestFields.base_uom !== undefined &&
+        requestFields.base_uom !== null &&
+        normalized.base_unit_of_measure === undefined
+    ) {
+        normalized.base_unit_of_measure = requestFields.base_uom;
+    }
+
+    return normalized;
+};
+
+const normalizeSingleRequestTemplatePayload = payload => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return {};
+    }
+
+    return { ...payload };
+};
+
 const LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY = `SELECT
             r.id AS request_id,
+            r.request_no,
             r.assigned_to,
             r.created_by,
+            r.created_at,
             r.status,
+            mig.code AS material_group_code,
             r.created_by AS requester_user_id,
             r.approval_1_user_id,
             r.approval_1_at,
@@ -50,8 +170,19 @@ const LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY = `SELECT
             r.approval_3_user_id,
             r.approval_3_at,
             r.approval_3_status,
-            r.approval_3_remark
+            r.approval_3_remark,
+            r.material_group_id,
+            r.material_sub_group_id,
+            r.plant_code,
+            r.sloc_code,
+            r.material_description,
+            r.base_uom,
+            r.long_text_1,
+            r.long_text_2,
+            r.long_text_3,
+            r.template_payload
         FROM mat_single_request r
+        LEFT JOIN mat_item_group mig ON mig.id = r.material_group_id
         WHERE r.id = $1
         FOR UPDATE OF r`;
 
@@ -159,6 +290,181 @@ const syncSingleRequestApprovalSnapshot = async (
             approval.approval_3_remark ?? null,
         ]
     );
+};
+
+const prepareSingleRequestApprovalEditPatch = async ({
+    snapshot = {},
+    editedRequest = {},
+    getSubGroupById,
+    validateMaterialRequestTemplate,
+} = {}) => {
+    const editablePatch = SINGLE_REQUEST_EDITABLE_FIELDS.reduce(
+        (patch, field) => {
+            if (
+                !editedRequest ||
+                typeof editedRequest !== "object" ||
+                !Object.prototype.hasOwnProperty.call(editedRequest, field)
+            ) {
+                return patch;
+            }
+
+            const nextValue = editedRequest[field] ?? null;
+            const currentValue = snapshot[field] ?? null;
+
+            if (
+                normalizeSingleRequestEditableValue(field, currentValue) !==
+                normalizeSingleRequestEditableValue(field, nextValue)
+            ) {
+                patch[field] = nextValue;
+            }
+
+            return patch;
+        },
+        {}
+    );
+
+    if (Object.keys(editablePatch).length === 0) {
+        return {};
+    }
+
+    if (
+        Object.prototype.hasOwnProperty.call(
+            editablePatch,
+            "material_sub_group_id"
+        )
+    ) {
+        const materialSubGroupId = Number.parseInt(
+            editablePatch.material_sub_group_id,
+            10
+        );
+
+        if (!Number.isInteger(materialSubGroupId)) {
+            throw buildSingleRequestApprovalError(
+                "Sub material group is required",
+                400,
+                "SINGLE_REQUEST_EDIT_INVALID_SUBGROUP"
+            );
+        }
+
+        const subgroup = await getSubGroupById(materialSubGroupId);
+
+        if (!subgroup || subgroup.deleted_at) {
+            throw buildSingleRequestApprovalError(
+                "Sub material group not found",
+                404,
+                "SINGLE_REQUEST_EDIT_SUBGROUP_NOT_FOUND"
+            );
+        }
+
+        if (Number(subgroup.item_group_id) !== Number(snapshot.material_group_id)) {
+            throw buildSingleRequestApprovalError(
+                "Sub material group does not belong to the selected material group",
+                400,
+                "SINGLE_REQUEST_EDIT_SUBGROUP_GROUP_MISMATCH"
+            );
+        }
+
+        editablePatch.material_sub_group_id = materialSubGroupId;
+    }
+
+    const needsTemplateValidation = [
+        "material_description",
+        "base_uom",
+        "template_payload",
+        "plant_code",
+        "sloc_code",
+        "long_text_1",
+        "long_text_2",
+        "long_text_3",
+    ].some(field => Object.prototype.hasOwnProperty.call(editablePatch, field));
+
+    if (!needsTemplateValidation) {
+        return editablePatch;
+    }
+
+    const currentTemplatePayload = normalizeSingleRequestTemplatePayload(
+        snapshot.template_payload
+    );
+    const mergedTemplatePayload = Object.prototype.hasOwnProperty.call(
+        editablePatch,
+        "template_payload"
+    )
+        ? normalizeSingleRequestTemplatePayload(editablePatch.template_payload)
+        : currentTemplatePayload;
+    const requestFields = normalizeSingleRequestRequestFields({
+        material_description:
+            editablePatch.material_description ?? snapshot.material_description,
+        base_uom: editablePatch.base_uom ?? snapshot.base_uom,
+        base_unit_of_measure: editablePatch.base_uom ?? snapshot.base_uom,
+        long_text_1: editablePatch.long_text_1 ?? snapshot.long_text_1,
+        long_text_2: editablePatch.long_text_2 ?? snapshot.long_text_2,
+        long_text_3: editablePatch.long_text_3 ?? snapshot.long_text_3,
+        plant: editablePatch.plant_code ?? snapshot.plant_code,
+        storage_location: editablePatch.sloc_code ?? snapshot.sloc_code,
+    });
+    const validation = await validateMaterialRequestTemplate({
+        materialGroupCode: snapshot.material_group_code,
+        requestFields,
+        templateValues: mergedTemplatePayload.templateValues || {},
+    });
+    const validationErrors = (validation.errors || []).filter(
+        error => !SINGLE_REQUEST_NON_FORM_FIELD_KEYS.has(error.fieldKey)
+    );
+
+    if (validationErrors.length > 0) {
+        const error = buildSingleRequestApprovalError(
+            "Material request validation failed",
+            400,
+            "SINGLE_REQUEST_EDIT_VALIDATION_FAILED"
+        );
+        error.errors = validationErrors;
+        throw error;
+    }
+
+    const normalizedRequestFields = buildNormalizedApprovalEditRequestFields({
+        requestFields,
+        validation,
+    });
+    const normalizedBaseUom =
+        normalizedRequestFields.base_unit_of_measure ??
+        normalizedRequestFields.base_uom;
+
+    if (
+        !normalizedRequestFields.material_description ||
+        !normalizedBaseUom
+    ) {
+        throw buildSingleRequestApprovalError(
+            "Material description and Base UoM are required",
+            400,
+            "SINGLE_REQUEST_EDIT_REQUIRED_FIELDS_MISSING"
+        );
+    }
+
+    editablePatch.material_description =
+        normalizedRequestFields.material_description;
+    editablePatch.base_uom = normalizedBaseUom;
+
+    if (Object.prototype.hasOwnProperty.call(editablePatch, "template_payload")) {
+        editablePatch.template_payload = {
+            ...mergedTemplatePayload,
+            requestFields: normalizedRequestFields,
+            templateValues:
+                validation.normalizedTemplateValues ||
+                mergedTemplatePayload.templateValues ||
+                {},
+        };
+    }
+
+    return Object.entries(editablePatch).reduce((patch, [field, value]) => {
+        if (
+            normalizeSingleRequestEditableValue(field, snapshot[field] ?? null) !==
+            normalizeSingleRequestEditableValue(field, value)
+        ) {
+            patch[field] = value;
+        }
+
+        return patch;
+    }, {});
 };
 
 const queryUsersWithPageAccessByIds = async (client, userIds) => {
@@ -330,11 +636,41 @@ const GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY = `SELECT
                         r.approval_2_user_id,
                         r.approval_2_status,
                         r.approval_3_user_id,
-                        r.approval_3_status
+                        r.approval_3_status,
+                        COALESCE(edit_history_rows.edit_history, '[]'::jsonb) AS edit_history
                     FROM mat_single_request r
                     LEFT JOIN mat_item_group mig ON mig.id = r.material_group_id
                     LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
                     LEFT JOIN mst_user u ON u.user_id = r.created_by
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            jsonb_agg(
+                                jsonb_build_object(
+                                    'id', eh.id,
+                                    'request_id', eh.request_id,
+                                    'request_no', eh.request_no,
+                                    'approval_stage', eh.approval_stage,
+                                    'approved_by_user_id', eh.approved_by_user_id,
+                                    'approve_remark', eh.approve_remark,
+                                    'approved_at', eh.approved_at,
+                                    'material_group_id', eh.material_group_id,
+                                    'material_sub_group_id', eh.material_sub_group_id,
+                                    'plant_code', eh.plant_code,
+                                    'sloc_code', eh.sloc_code,
+                                    'material_description', eh.material_description,
+                                    'base_uom', eh.base_uom,
+                                    'long_text_1', eh.long_text_1,
+                                    'long_text_2', eh.long_text_2,
+                                    'long_text_3', eh.long_text_3,
+                                    'template_payload', eh.template_payload,
+                                    'created_by', eh.created_by,
+                                    'created_at', eh.created_at
+                                )
+                                ORDER BY eh.approved_at DESC
+                            ) AS edit_history
+                        FROM mat_single_request_edit_history eh
+                        WHERE eh.request_id = r.id
+                    ) edit_history_rows ON TRUE
                     WHERE (
                         COALESCE(r.approval_1_status, 'WAITING') = 'WAITING'
                         OR (
@@ -3418,6 +3754,7 @@ const Material = {
         actorUserId,
         actorUsername,
         remark,
+        editedRequest,
     }) => {
         try {
             return await DBClientWrapper(async client => {
@@ -3432,6 +3769,14 @@ const Material = {
                     const activeStage =
                         resolveSingleRequestApprovalStage(snapshot);
                     const safeRemark = remark ?? null;
+                    const editablePatch =
+                        await prepareSingleRequestApprovalEditPatch({
+                            snapshot,
+                            editedRequest,
+                            getSubGroupById: Material.getSubGroupById,
+                            validateMaterialRequestTemplate:
+                                MaterialTemplate.validateMaterialRequestTemplate,
+                        });
 
                     if (!["Approval 1", "Approval 2"].includes(activeStage)) {
                         throw buildSingleRequestApprovalError(
@@ -3452,6 +3797,70 @@ const Material = {
                             "Forbidden: only the assigned approver or ADMIN can approve this request",
                             403,
                             "SINGLE_REQUEST_APPROVAL_FORBIDDEN"
+                        );
+                    }
+
+                    if (Object.keys(editablePatch).length > 0) {
+                        await client.query(
+                            `INSERT INTO mat_single_request_edit_history (
+                                request_id,
+                                request_no,
+                                approval_stage,
+                                approved_by_user_id,
+                                approve_remark,
+                                approved_at,
+                                material_group_id,
+                                material_sub_group_id,
+                                plant_code,
+                                sloc_code,
+                                material_description,
+                                base_uom,
+                                long_text_1,
+                                long_text_2,
+                                long_text_3,
+                                template_payload,
+                                created_by,
+                                created_at
+                            ) VALUES (
+                                $1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                            )`,
+                            [
+                                snapshot.request_id,
+                                snapshot.request_no,
+                                activeStage,
+                                actorUserId ?? null,
+                                safeRemark,
+                                snapshot.material_group_id ?? null,
+                                snapshot.material_sub_group_id ?? null,
+                                snapshot.plant_code ?? null,
+                                snapshot.sloc_code ?? null,
+                                snapshot.material_description ?? null,
+                                snapshot.base_uom ?? null,
+                                snapshot.long_text_1 ?? null,
+                                snapshot.long_text_2 ?? null,
+                                snapshot.long_text_3 ?? null,
+                                snapshot.template_payload ?? null,
+                                snapshot.created_by ?? null,
+                                snapshot.created_at ?? null,
+                            ]
+                        );
+
+                        const editablePatchFields = Object.keys(editablePatch);
+                        const assignments = editablePatchFields.map(
+                            (field, index) => `${field} = $${index + 2}`
+                        );
+
+                        await client.query(
+                            `UPDATE mat_single_request
+                            SET ${assignments.join(", ")},
+                                updated_at = NOW()
+                            WHERE id = $1`,
+                            [
+                                requestId,
+                                ...editablePatchFields.map(
+                                    field => editablePatch[field]
+                                ),
+                            ]
                         );
                     }
 
@@ -4030,6 +4439,7 @@ Material.__private = {
     GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY,
     assertSingleRequestAssignableStatus,
     buildSingleRequestApproverAssignmentPatch,
+    prepareSingleRequestApprovalEditPatch,
     LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
 };
 
