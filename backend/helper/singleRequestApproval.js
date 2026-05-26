@@ -2,6 +2,7 @@ const MDM_MATERIAL_GROUP_NAME = "MDM_MATERIAL";
 const INITIAL_APPROVAL_STATUS = "WAITING";
 const ADMIN_APPROVER_USERNAME = "ADMIN";
 const COMPLETED_SINGLE_REQUEST_ASSIGNMENT = "Completed";
+const SQL_NOW_EXPRESSION = Object.freeze({ __sql: "NOW()" });
 
 const normalizeUsername = value => String(value || "").trim().toUpperCase();
 const normalizeApprovalStatus = value => {
@@ -106,6 +107,41 @@ const matchesActorUserId = (assigneeUserId, actorUserId) =>
     actorUserId != null &&
     String(assigneeUserId) === String(actorUserId);
 
+const assertRequiredActionReason = (reason, actionLabel = "action") => {
+    if (!String(reason || "").trim()) {
+        const error = new Error(`${actionLabel} reason is required`);
+        error.statusCode = 400;
+        error.code = `${String(actionLabel || "action")
+            .trim()
+            .toUpperCase()}_REASON_REQUIRED`;
+        error.errors = [
+            {
+                fieldKey: "reason",
+                message: `${actionLabel} reason is required`,
+            },
+        ];
+        throw error;
+    }
+
+    return String(reason).trim();
+};
+
+const getApprovalStageFieldPrefix = stage => {
+    if (stage === "Approval 1") {
+        return "approval_1";
+    }
+
+    if (stage === "Approval 2") {
+        return "approval_2";
+    }
+
+    if (stage === "Approval 3") {
+        return "approval_3";
+    }
+
+    throw new Error(`Unsupported approval stage: ${stage}`);
+};
+
 const resolveSingleRequestApprovalStage = (approval = {}) => {
     const approval1Status = normalizeApprovalStatus(approval.approval_1_status);
     const approval2Status = normalizeApprovalStatus(approval.approval_2_status);
@@ -161,6 +197,15 @@ const isRequestStatusVisibleInApprovalList = status =>
         normalizeUsername(status)
     );
 
+const isRejectedStageVisibleForActor = (row = {}, actorUserId) =>
+    [1, 2, 3].some(step => {
+        const status = normalizeApprovalStatus(row[`approval_${step}_status`]);
+        return (
+            status === "REJECTED" &&
+            matchesActorUserId(row[`approval_${step}_user_id`], actorUserId)
+        );
+    });
+
 const filterSingleRequestApprovalInboxRows = (
     rows = [],
     { actorUserId, actorUsername } = {}
@@ -190,6 +235,10 @@ const filterSingleRequestApprovalInboxRows = (
             return matchesActorUserId(row.approval_3_user_id, actorUserId);
         }
 
+        if (isRejectedStageVisibleForActor(row, actorUserId)) {
+            return true;
+        }
+
         return false;
     });
 };
@@ -213,8 +262,67 @@ const canActorApproveSingleRequestStage = ({
         return matchesActorUserId(approval.approval_2_user_id, actorUserId);
     }
 
+    if (stage === "Approval 3") {
+        return matchesActorUserId(approval.approval_3_user_id, actorUserId);
+    }
+
     return false;
 };
+
+const buildSingleRequestReworkPatch = ({
+    reworkStage,
+    actorUserId,
+    reason,
+} = {}) => {
+    const safeReason = assertRequiredActionReason(reason, "rework");
+    const fieldPrefix = getApprovalStageFieldPrefix(reworkStage);
+
+    return {
+        status: "Rework",
+        assigned_to: "Requester",
+        rework_stage: reworkStage,
+        rework_by_user_id: actorUserId ?? null,
+        rework_at: SQL_NOW_EXPRESSION,
+        rework_reason: safeReason,
+        [`${fieldPrefix}_status`]: "REWORK",
+        [`${fieldPrefix}_remark`]: safeReason,
+    };
+};
+
+const buildSingleRequestRevisedPatch = reworkStage => {
+    const fieldPrefix = getApprovalStageFieldPrefix(reworkStage);
+
+    return {
+        status: "Submit",
+        assigned_to: reworkStage,
+        [`${fieldPrefix}_status`]: INITIAL_APPROVAL_STATUS,
+        [`${fieldPrefix}_at`]: null,
+    };
+};
+
+const buildSingleRequestRejectPatch = ({ rejectStage, reason } = {}) => {
+    const safeReason = assertRequiredActionReason(reason, "reject");
+    const fieldPrefix = getApprovalStageFieldPrefix(rejectStage);
+
+    return {
+        status: "CANCEL",
+        assigned_to: "Cancelled",
+        [`${fieldPrefix}_status`]: "REJECTED",
+        [`${fieldPrefix}_at`]: SQL_NOW_EXPRESSION,
+        [`${fieldPrefix}_remark`]: safeReason,
+    };
+};
+
+const canActorReviseSingleRequest = ({
+    request = {},
+    actorUserId,
+    actorUsername,
+} = {}) =>
+    isAdminMaterialApprover(actorUsername) ||
+    matchesActorUserId(
+        request.requester_user_id ?? request.created_by,
+        actorUserId
+    );
 
 const getUniqueGroupNames = rows => {
     const names = rows
@@ -276,14 +384,25 @@ const buildRequesterApprovalMaster = ({
 
 const buildSingleRequestApprovalSnapshot = ({
     requesterUserId,
+    requesterUsername,
     approvalMaster,
 } = {}) => ({
     requester_user_id: requesterUserId,
-    approval_1_user_id: normalizeAssigneeValue(approvalMaster?.approval_1_user_id),
+    approval_1_user_id: normalizeAssigneeValue(
+        approvalMaster?.approval_1_user_id
+    ) ??
+        (isAdminMaterialApprover(requesterUsername)
+            ? normalizeAssigneeValue(requesterUserId)
+            : null),
     approval_1_status: INITIAL_APPROVAL_STATUS,
     approval_1_at: null,
     approval_1_remark: null,
-    approval_2_user_id: normalizeAssigneeValue(approvalMaster?.approval_2_user_id),
+    approval_2_user_id: normalizeAssigneeValue(
+        approvalMaster?.approval_2_user_id
+    ) ??
+        (isAdminMaterialApprover(requesterUsername)
+            ? normalizeAssigneeValue(requesterUserId)
+            : null),
     approval_2_status: null,
     approval_2_at: null,
     approval_2_remark: null,
@@ -405,15 +524,21 @@ module.exports = {
     COMPLETED_SINGLE_REQUEST_ASSIGNMENT,
     INITIAL_APPROVAL_STATUS,
     MDM_MATERIAL_GROUP_NAME,
+    assertRequiredActionReason,
     buildAdministratorAssignmentDecision,
     buildAutoAssignedApproval3,
     buildInitialSingleRequestApproval,
     buildRequesterApprovalMaster,
+    buildSingleRequestRejectPatch,
+    buildSingleRequestRevisedPatch,
+    buildSingleRequestReworkPatch,
     buildSingleRequestApprovalSnapshot,
     buildLoginUserGroupInfo,
     canActorApproveSingleRequestStage,
+    canActorReviseSingleRequest,
     canEditApprovalAssignee,
     filterSingleRequestApprovalInboxRows,
+    getApprovalStageFieldPrefix,
     isAdminMaterialApprover,
     isRequestStatusVisibleInApprovalList,
     isSingleRequestApprovalInboxEligible,

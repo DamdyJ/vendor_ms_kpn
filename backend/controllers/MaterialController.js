@@ -22,10 +22,24 @@ const SINGLE_REQUEST_FILE_EXTENSIONS = [
 ];
 const MAX_SINGLE_REQUEST_ATTACHMENTS = 3;
 
-const resolveMaterialFilePath = filename =>
-    MATERIAL_FILE_DIRECTORIES.map(directory =>
-        path.join(directory, filename)
-    ).find(filepath => fs.existsSync(filepath));
+const resolveMaterialFilePath = filename => {
+    const normalizedFilename = String(filename || "").replace(/\\/g, "/");
+
+    return MATERIAL_FILE_DIRECTORIES.map(directory => {
+        const absoluteDirectory = path.resolve(directory);
+        const candidatePath = path.resolve(absoluteDirectory, normalizedFilename);
+        const directoryPrefix = `${absoluteDirectory}${path.sep}`;
+
+        if (
+            candidatePath !== absoluteDirectory &&
+            !candidatePath.startsWith(directoryPrefix)
+        ) {
+            return null;
+        }
+
+        return candidatePath;
+    }).find(filepath => filepath && fs.existsSync(filepath));
+};
 
 const toFieldValue = value => (Array.isArray(value) ? value[0] : value);
 
@@ -156,6 +170,86 @@ const buildNormalizedSingleRequestFields = ({
 
     return normalized;
 };
+
+const normalizeUploadedFiles = rawFiles => {
+    const normalized = rawFiles || [];
+    return (Array.isArray(normalized) ? normalized : [normalized]).filter(Boolean);
+};
+
+const parseAttachmentInstructions = value => {
+    const parsed = parseJsonField(value);
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return {};
+    }
+
+    return parsed;
+};
+
+const buildSingleRequestAttachmentDescriptors = ({
+    files = [],
+    materialGroupCode,
+    subgroupCode,
+}) => {
+    const safeMaterialGroupCode = sanitizePathSegment(materialGroupCode);
+    const safeSubgroupCode = sanitizePathSegment(subgroupCode);
+
+    return files.map(file => {
+        const originalFilename = file.originalFilename || file.newFilename;
+        const { extension, safeOriginalName, safeBaseName } =
+            sanitizeUploadName(originalFilename);
+
+        if (!SINGLE_REQUEST_FILE_EXTENSIONS.includes(extension)) {
+            const error = new Error(
+                "Invalid file format. Please upload files with valid extensions: " +
+                    SINGLE_REQUEST_FILE_EXTENSIONS.join(", ")
+            );
+            error.statusCode = 400;
+            throw error;
+        }
+
+        const timestamp = Date.now().toString();
+        const newName = `${timestamp}_${safeBaseName}.${extension}`;
+        const relativePath = path.posix.join(
+            "single-request-attachments",
+            safeMaterialGroupCode,
+            safeSubgroupCode,
+            newName
+        );
+
+        return {
+            tempPath: file.filepath,
+            originalName: safeOriginalName,
+            newName,
+            relativePath,
+            extension,
+            mimeType: getMimeType(extension),
+        };
+    });
+};
+
+const buildReworkEditedRequestPayload = ({
+    materialGroup,
+    materialSubGroupId,
+    requestFields = {},
+    templateValues = {},
+}) => ({
+    material_group_id: materialGroup?.id ?? null,
+    material_group_code: materialGroup?.code ?? null,
+    material_sub_group_id: materialSubGroupId,
+    plant_code: requestFields.plant ?? null,
+    sloc_code: requestFields.storage_location ?? requestFields.storageLocation ?? null,
+    material_description: requestFields.material_description ?? null,
+    base_uom:
+        requestFields.base_unit_of_measure ?? requestFields.base_uom ?? null,
+    long_text_1: requestFields.long_text_1 ?? null,
+    long_text_2: requestFields.long_text_2 ?? null,
+    long_text_3: requestFields.long_text_3 ?? null,
+    template_payload: {
+        requestFields,
+        templateValues,
+    },
+});
 
 const withMaterialTemplateAliases = payload => {
     if (!payload || typeof payload !== "object") {
@@ -1575,6 +1669,7 @@ const MaterialController = {
                     validation.normalizedTemplateValues || templateValues,
                 attachments,
                 createdBy: userId,
+                createdByUsername: req.cookies?.username ?? null,
             });
 
             return res.status(201).json({
@@ -1618,6 +1713,31 @@ const MaterialController = {
         }
     },
 
+    getSingleRequestById: async (req, res) => {
+        try {
+            const row = await Material.getSingleRequestById({
+                requestId: req.params.id,
+                actorUserId: req.cookies.user_id,
+                actorUsername: req.cookies.username,
+            });
+
+            return res.status(200).json({
+                success: true,
+                data: row,
+            });
+        } catch (error) {
+            const statusCode = error.statusCode || 500;
+            return res.status(statusCode).json({
+                success: false,
+                message:
+                    statusCode === 500
+                        ? "Failed to fetch single material request"
+                        : error.message,
+                error: statusCode === 500 ? error.message : undefined,
+            });
+        }
+    },
+
     getSingleRequestApprovalInbox: async (req, res) => {
         try {
             const actorUsername = req.cookies?.username;
@@ -1639,6 +1759,249 @@ const MaterialController = {
         }
     },
 
+    requestSingleRequestRework: async (req, res) => {
+        try {
+            const result = await Material.requestSingleRequestRework({
+                requestId: req.params.id,
+                actorUserId: req.cookies.user_id,
+                actorUsername: req.cookies.username,
+                reason: req.body?.reason ?? null,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: "Single request rework requested successfully",
+                data: result,
+            });
+        } catch (error) {
+            const statusCode = error.statusCode || 500;
+            return res.status(statusCode).json({
+                success: false,
+                message:
+                    statusCode === 500
+                        ? "Failed to request single request rework"
+                        : error.message,
+                error: statusCode === 500 ? error.message : undefined,
+            });
+        }
+    },
+
+    saveSingleRequestRework: async (req, res) => {
+        let tempFilePaths = [];
+
+        try {
+            let editedRequest = req.body?.editedRequest ?? null;
+            let attachments = null;
+            const isMultipartRequest = String(
+                req.headers?.["content-type"] || ""
+            ).includes("multipart/form-data");
+
+            if (
+                !isMultipartRequest &&
+                req.body?.attachments != null
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Attachment updates for single request rework require multipart/form-data",
+                });
+            }
+
+            if (isMultipartRequest) {
+                const form = new formidable.IncomingForm();
+                form.options.multiples = true;
+                form.options.maxFileSize = 5 * 1024 * 1024;
+
+                const [fields, items] = await form.parse(req);
+                const materialGroupCode = String(
+                    toFieldValue(fields.materialGroupCode) || ""
+                ).trim();
+                const subgroupValue = toFieldValue(fields.subgroup);
+                const materialSubGroupId = Number.parseInt(subgroupValue, 10);
+                const requestFields = normalizeRequestFields(
+                    parseJsonField(fields.requestFields)
+                );
+                const templateValues = parseJsonField(fields.templateValues);
+                const attachmentInstructions = parseAttachmentInstructions(
+                    fields.attachments
+                );
+                const files = normalizeUploadedFiles(items.files || items.file);
+                tempFilePaths = files.map(file => file.filepath).filter(Boolean);
+
+                if (!materialGroupCode) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Material group is required",
+                        errors: [
+                            {
+                                fieldKey: "material_group",
+                                message: "Material group is required",
+                            },
+                        ],
+                    });
+                }
+
+                if (!Number.isInteger(materialSubGroupId)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Sub material group is required",
+                        errors: [
+                            {
+                                fieldKey: "material_sub_group_id",
+                                message: "Sub material group is required",
+                            },
+                        ],
+                    });
+                }
+
+                if (files.length > MAX_SINGLE_REQUEST_ATTACHMENTS) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Maximum ${MAX_SINGLE_REQUEST_ATTACHMENTS} attachments are allowed`,
+                    });
+                }
+
+                const materialGroup =
+                    await Material.getMaterialGroupByCode(materialGroupCode);
+                if (!materialGroup) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Material group not found",
+                        errors: [
+                            {
+                                fieldKey: "material_group",
+                                message: "Material group not found",
+                            },
+                        ],
+                    });
+                }
+
+                const subgroup = await Material.getSubGroupById(materialSubGroupId);
+                if (!subgroup || subgroup.deleted_at) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Sub material group not found",
+                        errors: [
+                            {
+                                fieldKey: "material_sub_group_id",
+                                message: "Sub material group not found",
+                            },
+                        ],
+                    });
+                }
+
+                if (Number(subgroup.item_group_id) !== Number(materialGroup.id)) {
+                    return res.status(400).json({
+                        success: false,
+                        message:
+                            "Sub material group does not belong to the selected material group",
+                        errors: [
+                            {
+                                fieldKey: "material_sub_group_id",
+                                message:
+                                    "Sub material group does not belong to the selected material group",
+                            },
+                        ],
+                    });
+                }
+
+                editedRequest = buildReworkEditedRequestPayload({
+                    materialGroup,
+                    materialSubGroupId,
+                    requestFields,
+                    templateValues,
+                });
+                attachments = {
+                    keepAttachmentIds: Array.isArray(
+                        attachmentInstructions.keepAttachmentIds
+                    )
+                        ? attachmentInstructions.keepAttachmentIds
+                              .map(id => Number.parseInt(id, 10))
+                              .filter(Number.isInteger)
+                        : undefined,
+                    newAttachments: buildSingleRequestAttachmentDescriptors({
+                        files,
+                        materialGroupCode: materialGroup.code,
+                        subgroupCode: subgroup.subgroup_code,
+                    }),
+                };
+            }
+
+            const result = await Material.saveSingleRequestRework({
+                requestId: req.params.id,
+                actorUserId: req.cookies.user_id,
+                actorUsername: req.cookies.username,
+                editedRequest,
+                attachments,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: "Single request rework saved successfully",
+                data: result,
+            });
+        } catch (error) {
+            if (Number.isInteger(error?.statusCode)) {
+                const payload = {
+                    success: false,
+                    message: error.message,
+                };
+
+                if (error.code) {
+                    payload.code = error.code;
+                }
+
+                if (Array.isArray(error.errors) && error.errors.length > 0) {
+                    payload.errors = error.errors;
+                }
+
+                return res.status(error.statusCode).json(payload);
+            }
+
+            return res.status(500).json({
+                success: false,
+                message: "Failed to save single request rework",
+                error: error.message,
+            });
+        } finally {
+            cleanupTempFiles(tempFilePaths);
+        }
+    },
+
+    rejectSingleRequest: async (req, res) => {
+        try {
+            const result = await Material.rejectSingleRequestByAdmin({
+                requestId: req.params.id,
+                actorUserId: req.cookies.user_id,
+                actorUsername: req.cookies.username,
+                reason: req.body?.reason ?? null,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: "Single request rejected successfully",
+                data: result,
+            });
+        } catch (error) {
+            const statusCode = error.statusCode || 500;
+            const payload = {
+                success: false,
+                message:
+                    statusCode === 500
+                        ? "Failed to reject single request"
+                        : error.message,
+                error: statusCode === 500 ? error.message : undefined,
+                code: error.code,
+            };
+
+            if (Array.isArray(error.errors) && error.errors.length > 0) {
+                payload.errors = error.errors;
+            }
+
+            return res.status(statusCode).json(payload);
+        }
+    },
+
     approveSingleRequest: async (req, res) => {
         try {
             const result = await Material.approveSingleRequestByAdmin({
@@ -1655,25 +2018,21 @@ const MaterialController = {
                 data: result,
             });
         } catch (error) {
-            if (error.statusCode === 403) {
-                return res.status(403).json({
+            if (Number.isInteger(error?.statusCode)) {
+                const payload = {
                     success: false,
                     message: error.message,
-                });
-            }
+                };
 
-            if (error.statusCode === 404) {
-                return res.status(404).json({
-                    success: false,
-                    message: error.message,
-                });
-            }
+                if (error.code) {
+                    payload.code = error.code;
+                }
 
-            if (error.statusCode === 409) {
-                return res.status(409).json({
-                    success: false,
-                    message: error.message,
-                });
+                if (Array.isArray(error.errors) && error.errors.length > 0) {
+                    payload.errors = error.errors;
+                }
+
+                return res.status(error.statusCode).json(payload);
             }
 
             return res.status(500).json({

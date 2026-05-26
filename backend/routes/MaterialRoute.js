@@ -160,6 +160,11 @@ router.get(
     AuthToken.authSession,
     MaterialController.getSingleRequestApproverMasters
 );
+router.get(
+    "/requests/single/:id",
+    AuthToken.authSession,
+    MaterialController.getSingleRequestById
+);
 router.patch(
     "/requests/single/approver-masters/:requesterUserId",
     AuthToken.authSession,
@@ -174,6 +179,21 @@ router.post(
     "/requests/single/:id/approve",
     AuthToken.authSession,
     MaterialController.approveSingleRequest
+);
+router.post(
+    "/requests/single/:id/rework",
+    AuthToken.authSession,
+    MaterialController.requestSingleRequestRework
+);
+router.post(
+    "/requests/single/:id/reject",
+    AuthToken.authSession,
+    MaterialController.rejectSingleRequest
+);
+router.put(
+    "/requests/single/:id/rework",
+    AuthToken.authSession,
+    MaterialController.saveSingleRequestRework
 );
 
 // Material template endpoints

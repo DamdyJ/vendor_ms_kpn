@@ -15,11 +15,15 @@ const TRANS = require("../config/transaction.js");
 const {
     INITIAL_APPROVAL_STATUS,
     MDM_MATERIAL_GROUP_NAME,
+    buildSingleRequestRejectPatch,
+    buildSingleRequestRevisedPatch,
+    buildSingleRequestReworkPatch,
     buildAdministratorAssignmentDecision,
     buildAutoAssignedApproval3,
     buildRequesterApprovalMaster,
     buildSingleRequestApprovalSnapshot,
     canActorApproveSingleRequestStage,
+    canActorReviseSingleRequest,
     canEditApprovalAssignee,
     filterSingleRequestApprovalInboxRows,
     isAdminMaterialApprover,
@@ -60,6 +64,17 @@ const SINGLE_REQUEST_NON_FORM_FIELD_KEYS = new Set([
     "valuation_class_project_stock",
 ]);
 
+const SINGLE_REQUEST_APPROVAL_EDIT_REQUEST_FIELD_KEYS = new Set([
+    "material_description",
+    "base_uom",
+    "base_unit_of_measure",
+    "plant",
+    "storage_location",
+    "long_text_1",
+    "long_text_2",
+    "long_text_3",
+]);
+
 const SINGLE_REQUEST_REQUEST_FIELD_ALIASES = {
     base_uom: "base_unit_of_measure",
     storageLocation: "storage_location",
@@ -95,6 +110,30 @@ const normalizeSingleRequestRequestFields = payload => {
     }
 
     return normalized;
+};
+
+const isSingleRequestApprovalEditValidationErrorVisible = (
+    error = {},
+    validation = {}
+) => {
+    const fieldKey = error.fieldKey ?? error.field_key;
+
+    if (!fieldKey || SINGLE_REQUEST_NON_FORM_FIELD_KEYS.has(fieldKey)) {
+        return false;
+    }
+
+    const isRequestRuleError = (validation.requestFieldRules || []).some(
+        rule => (rule?.fieldKey ?? rule?.field_key) === fieldKey
+    );
+
+    if (
+        isRequestRuleError &&
+        !SINGLE_REQUEST_APPROVAL_EDIT_REQUEST_FIELD_KEYS.has(fieldKey)
+    ) {
+        return false;
+    }
+
+    return true;
 };
 
 const buildNormalizedApprovalEditRequestFields = ({
@@ -150,6 +189,79 @@ const normalizeSingleRequestTemplatePayload = payload => {
     return { ...payload };
 };
 
+const SINGLE_REQUEST_MAX_ATTACHMENTS = 3;
+const SINGLE_REQUEST_PUBLIC_DIRECTORY = path.join(
+    path.resolve(),
+    "backend",
+    "public"
+);
+const isRawSqlExpression = value =>
+    Boolean(
+        value &&
+            typeof value === "object" &&
+            !Array.isArray(value) &&
+            value.__sql === "NOW()"
+    );
+
+const normalizeSingleRequestAttachmentRelativePath = relativePath => {
+    const normalized = path.posix
+        .normalize(
+            `/${String(relativePath || "")
+                .replace(/\\/g, "/")
+                .replace(/^\/+/, "")}`
+        )
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "");
+
+    if (
+        !normalized.startsWith("single-request-attachments/") ||
+        normalized.includes("../")
+    ) {
+        throw buildSingleRequestApprovalError(
+            "Invalid single request attachment path",
+            400,
+            "SINGLE_REQUEST_ATTACHMENT_INVALID_PATH"
+        );
+    }
+
+    return normalized;
+};
+
+const assertSingleRequestAttachmentUpload = attachment => {
+    const tempPath = String(attachment?.tempPath || "").trim();
+    const fileName =
+        attachment?.file_name ??
+        attachment?.originalName ??
+        attachment?.name ??
+        null;
+    const fileType =
+        attachment?.file_type ??
+        attachment?.mimeType ??
+        attachment?.type ??
+        null;
+    const relativePath = normalizeSingleRequestAttachmentRelativePath(
+        attachment?.file_path ??
+            attachment?.relativePath ??
+            attachment?.path ??
+            null
+    );
+
+    if (!tempPath) {
+        throw buildSingleRequestApprovalError(
+            "Invalid single request attachment upload",
+            400,
+            "SINGLE_REQUEST_ATTACHMENT_INVALID_UPLOAD"
+        );
+    }
+
+    return {
+        tempPath,
+        fileName,
+        fileType,
+        relativePath,
+    };
+};
+
 const LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY = `SELECT
             r.id AS request_id,
             r.request_no,
@@ -171,6 +283,10 @@ const LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY = `SELECT
             r.approval_3_at,
             r.approval_3_status,
             r.approval_3_remark,
+            r.rework_stage,
+            r.rework_by_user_id,
+            r.rework_at,
+            r.rework_reason,
             r.material_group_id,
             r.material_sub_group_id,
             r.plant_code,
@@ -289,16 +405,143 @@ const syncSingleRequestApprovalSnapshot = async (
             approval.approval_3_at ?? null,
             approval.approval_3_remark ?? null,
         ]
+        );
+};
+
+const updateSingleRequestColumns = async (client, requestId, patch = {}) => {
+    const patchFields = Object.keys(patch);
+
+    if (patchFields.length === 0) {
+        return;
+    }
+
+    const assignments = [];
+    const params = [requestId];
+    let paramIndex = 2;
+
+    for (const field of patchFields) {
+        const value = patch[field];
+
+        if (isRawSqlExpression(value)) {
+            assignments.push(`${field} = ${value.__sql}`);
+            continue;
+        }
+
+        assignments.push(`${field} = $${paramIndex}`);
+        params.push(value);
+        paramIndex += 1;
+    }
+
+    await client.query(
+        `UPDATE mat_single_request
+        SET ${assignments.join(", ")},
+            updated_at = NOW()
+        WHERE id = $1`,
+        params
     );
+};
+
+const getSingleRequestAttachments = async (client, requestId) => {
+    const result = await client.query(
+        `SELECT id, file_name, file_path, file_type
+         FROM mat_single_request_attachment
+         WHERE request_id = $1
+         ORDER BY id`,
+        [requestId]
+    );
+
+    return result.rows;
+};
+
+const insertSingleRequestAttachment = async (client, requestId, attachment) => {
+    const safeRelativePath = normalizeSingleRequestAttachmentRelativePath(
+        attachment.file_path ??
+            attachment.relativePath ??
+            attachment.path ??
+            null
+    );
+
+    await client.query(
+        `INSERT INTO mat_single_request_attachment (
+            request_id,
+            file_name,
+            file_path,
+            file_type,
+            created_at
+        ) VALUES ($1, $2, $3, $4, NOW())`,
+        [
+            requestId,
+            attachment.file_name ??
+                attachment.originalName ??
+                attachment.name ??
+                null,
+            safeRelativePath,
+            attachment.file_type ??
+                attachment.mimeType ??
+                attachment.type ??
+                null,
+        ]
+    );
+};
+
+const persistSingleRequestAttachmentFiles = attachments => {
+    const savedFiles = [];
+
+    for (const attachment of attachments) {
+        const safeAttachment = assertSingleRequestAttachmentUpload(attachment);
+        const finalPath = path.join(
+            SINGLE_REQUEST_PUBLIC_DIRECTORY,
+            safeAttachment.relativePath
+        );
+        const finalDir = path.dirname(finalPath);
+
+        if (!fs.existsSync(finalDir)) {
+            fs.mkdirSync(finalDir, { recursive: true });
+        }
+
+        const rawData = fs.readFileSync(safeAttachment.tempPath);
+        fs.writeFileSync(finalPath, rawData);
+        savedFiles.push(finalPath);
+    }
+
+    return savedFiles;
+};
+
+const deleteSingleRequestStoredFiles = filepaths => {
+    for (const filepath of filepaths) {
+        if (!filepath) {
+            continue;
+        }
+
+        const absolutePath = path.join(
+            SINGLE_REQUEST_PUBLIC_DIRECTORY,
+            normalizeSingleRequestAttachmentRelativePath(filepath)
+        );
+
+        try {
+            if (fs.existsSync(absolutePath)) {
+                fs.unlinkSync(absolutePath);
+            }
+        } catch (error) {
+            console.error(
+                `Failed to delete single request attachment file ${filepath}:`,
+                error
+            );
+        }
+    }
 };
 
 const prepareSingleRequestApprovalEditPatch = async ({
     snapshot = {},
     editedRequest = {},
+    allowMaterialGroupChange = false,
     getSubGroupById,
     validateMaterialRequestTemplate,
 } = {}) => {
-    const editablePatch = SINGLE_REQUEST_EDITABLE_FIELDS.reduce(
+    const editableFields = allowMaterialGroupChange
+        ? [...SINGLE_REQUEST_EDITABLE_FIELDS, "material_group_id"]
+        : SINGLE_REQUEST_EDITABLE_FIELDS;
+    const editablePatch = editableFields.reduce(
         (patch, field) => {
             if (
                 !editedRequest ||
@@ -322,6 +565,46 @@ const prepareSingleRequestApprovalEditPatch = async ({
         },
         {}
     );
+
+    let selectedMaterialGroupId = snapshot.material_group_id;
+    let selectedMaterialGroupCode = snapshot.material_group_code;
+
+    if (
+        allowMaterialGroupChange &&
+        Object.prototype.hasOwnProperty.call(editablePatch, "material_group_id")
+    ) {
+        const materialGroupId = Number.parseInt(
+            editablePatch.material_group_id,
+            10
+        );
+
+        if (!Number.isInteger(materialGroupId)) {
+            throw buildSingleRequestApprovalError(
+                "Material group is required",
+                400,
+                "SINGLE_REQUEST_EDIT_INVALID_GROUP"
+            );
+        }
+
+        selectedMaterialGroupId = materialGroupId;
+
+        if (materialGroupId === Number(snapshot.material_group_id)) {
+            selectedMaterialGroupCode = snapshot.material_group_code;
+        } else {
+            selectedMaterialGroupCode =
+                String(editedRequest.material_group_code || "").trim() || null;
+        }
+
+        if (!selectedMaterialGroupCode) {
+            throw buildSingleRequestApprovalError(
+                "Material group is required",
+                400,
+                "SINGLE_REQUEST_EDIT_GROUP_CODE_MISSING"
+            );
+        }
+
+        editablePatch.material_group_id = materialGroupId;
+    }
 
     if (Object.keys(editablePatch).length === 0) {
         return {};
@@ -356,7 +639,7 @@ const prepareSingleRequestApprovalEditPatch = async ({
             );
         }
 
-        if (Number(subgroup.item_group_id) !== Number(snapshot.material_group_id)) {
+        if (Number(subgroup.item_group_id) !== Number(selectedMaterialGroupId)) {
             throw buildSingleRequestApprovalError(
                 "Sub material group does not belong to the selected material group",
                 400,
@@ -376,6 +659,7 @@ const prepareSingleRequestApprovalEditPatch = async ({
         "long_text_1",
         "long_text_2",
         "long_text_3",
+        "material_group_id",
     ].some(field => Object.prototype.hasOwnProperty.call(editablePatch, field));
 
     if (!needsTemplateValidation) {
@@ -403,12 +687,12 @@ const prepareSingleRequestApprovalEditPatch = async ({
         storage_location: editablePatch.sloc_code ?? snapshot.sloc_code,
     });
     const validation = await validateMaterialRequestTemplate({
-        materialGroupCode: snapshot.material_group_code,
+        materialGroupCode: selectedMaterialGroupCode,
         requestFields,
         templateValues: mergedTemplatePayload.templateValues || {},
     });
     const validationErrors = (validation.errors || []).filter(
-        error => !SINGLE_REQUEST_NON_FORM_FIELD_KEYS.has(error.fieldKey)
+        error => isSingleRequestApprovalEditValidationErrorVisible(error, validation)
     );
 
     if (validationErrors.length > 0) {
@@ -545,12 +829,27 @@ const getRandomMdmMaterialUser = async client => {
     return result.rows[0] || null;
 };
 
-const SINGLE_REQUEST_SELECT_FIELDS = `r.id,
-                        r.request_no AS ticket_number,
-                        r.ticket_type,
-                        mig.code AS material_group_code,
-                        mig.name AS material_group_name,
-                        r.material_sub_group_id,
+const SINGLE_REQUEST_REWORK_SELECT_FIELDS = `r.rework_stage,
+                        r.rework_by_user_id,
+                        TO_CHAR(r.rework_at, 'YYYY-MM-DD HH24:MI') AS rework_at,
+                        rework_by.username AS rework_by_username,
+                        r.rework_reason`;
+
+const SINGLE_REQUEST_LEGACY_REWORK_SELECT_FIELDS = `NULL::varchar AS rework_stage,
+                        NULL::varchar AS rework_by_user_id,
+                        NULL::text AS rework_at,
+                        NULL::varchar AS rework_by_username,
+                        NULL::text AS rework_reason`;
+
+const buildSingleRequestSelectFields = ({
+    includeReworkFields = true,
+} = {}) => `r.id,
+                          r.request_no AS ticket_number,
+                          r.ticket_type,
+                          r.material_group_id,
+                          mig.code AS material_group_code,
+                          mig.name AS material_group_name,
+                          r.material_sub_group_id,
                         mis.code AS material_sub_group_code,
                         mis.name AS material_sub_group_name,
                         r.plant_code,
@@ -564,20 +863,28 @@ const SINGLE_REQUEST_SELECT_FIELDS = `r.id,
                         r.status,
                         r.created_by AS requester_user_id,
                         r.approval_1_user_id,
+                        COALESCE(approval_1_user.fullname, approval_1_user.username, r.approval_1_user_id) AS approval_1_user_name,
                         r.approval_1_status,
                         TO_CHAR(r.approval_1_at, 'YYYY-MM-DD HH24:MI') AS approval_1_at,
                         r.approval_1_remark,
                         r.approval_2_user_id,
+                        COALESCE(approval_2_user.fullname, approval_2_user.username, r.approval_2_user_id) AS approval_2_user_name,
                         r.approval_2_status,
                         TO_CHAR(r.approval_2_at, 'YYYY-MM-DD HH24:MI') AS approval_2_at,
                         r.approval_2_remark,
-                        r.approval_3_status,
-                        r.approval_3_user_id,
-                        TO_CHAR(r.approval_3_at, 'YYYY-MM-DD HH24:MI') AS approval_3_at,
-                        r.approval_3_remark,
-                        COALESCE(u.username, r.created_by) AS created_by,
-                        TO_CHAR(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
-                        r.assigned_to,
+                          r.approval_3_status,
+                          r.approval_3_user_id,
+                          COALESCE(approval_3_user.fullname, approval_3_user.username, r.approval_3_user_id) AS approval_3_user_name,
+                          TO_CHAR(r.approval_3_at, 'YYYY-MM-DD HH24:MI') AS approval_3_at,
+                          r.approval_3_remark,
+                          ${
+                              includeReworkFields
+                                  ? SINGLE_REQUEST_REWORK_SELECT_FIELDS
+                                  : SINGLE_REQUEST_LEGACY_REWORK_SELECT_FIELDS
+                          },
+                          COALESCE(u.username, r.created_by) AS created_by,
+                          TO_CHAR(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
+                          r.assigned_to,
                         COALESCE(
                             jsonb_agg(
                                 jsonb_build_object(
@@ -592,28 +899,50 @@ const SINGLE_REQUEST_SELECT_FIELDS = `r.id,
                         ) AS attachments`;
 
 const SINGLE_REQUEST_GROUP_BY = `r.id,
-                        mig.code,
-                        mig.name,
-                        mis.code,
-                        mis.name,
-                        u.username`;
+                          mig.code,
+                          mig.name,
+                          mis.code,
+                          mis.name,
+                          u.username,
+                          approval_1_user.fullname,
+                          approval_1_user.username,
+                          approval_2_user.fullname,
+                          approval_2_user.username,
+                          approval_3_user.fullname,
+                          approval_3_user.username`;
 
-const buildSingleRequestListQuery = whereClause => `SELECT
-                        ${SINGLE_REQUEST_SELECT_FIELDS}
-                    FROM mat_single_request r
-                    LEFT JOIN mst_user u ON u.user_id = r.created_by
-                    LEFT JOIN mat_item_group mig ON mig.id = r.material_group_id
-                    LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
-                    LEFT JOIN mat_single_request_attachment att ON att.request_id = r.id
+const buildSingleRequestListQuery = (
+    whereClause,
+    { includeReworkFields = true } = {}
+) => `SELECT
+                        ${buildSingleRequestSelectFields({ includeReworkFields })}
+                      FROM mat_single_request r
+                      LEFT JOIN mst_user u ON u.user_id = r.created_by
+                      LEFT JOIN mst_user approval_1_user ON approval_1_user.user_id = r.approval_1_user_id
+                      LEFT JOIN mst_user approval_2_user ON approval_2_user.user_id = r.approval_2_user_id
+                      LEFT JOIN mst_user approval_3_user ON approval_3_user.user_id = r.approval_3_user_id
+                      ${
+                          includeReworkFields
+                              ? "LEFT JOIN mst_user rework_by ON rework_by.user_id = r.rework_by_user_id"
+                              : ""
+                      }
+                      LEFT JOIN mat_item_group mig ON mig.id = r.material_group_id
+                      LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
+                      LEFT JOIN mat_single_request_attachment att ON att.request_id = r.id
                     WHERE ${whereClause}
                     GROUP BY
                         ${SINGLE_REQUEST_GROUP_BY}
+                        ${includeReworkFields ? ",\n                          rework_by.username" : ""}
                     ORDER BY r.created_at DESC, r.id DESC`;
 
-const GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY = `SELECT
+const buildSingleRequestApprovalInboxQuery = ({
+    includeEditHistory = true,
+    includeReworkFields = true,
+} = {}) => `SELECT
                         r.id,
                         r.request_no AS ticket_number,
                         r.ticket_type,
+                        r.material_group_id,
                         mig.code AS material_group_code,
                         mig.name AS material_group_name,
                         r.material_sub_group_id,
@@ -632,17 +961,39 @@ const GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY = `SELECT
                         TO_CHAR(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
                         r.assigned_to,
                         r.approval_1_user_id,
+                        COALESCE(approval_1_user.fullname, approval_1_user.username, r.approval_1_user_id) AS approval_1_user_name,
                         r.approval_1_status,
                         r.approval_2_user_id,
-                        r.approval_2_status,
-                        r.approval_3_user_id,
-                        r.approval_3_status,
-                        COALESCE(edit_history_rows.edit_history, '[]'::jsonb) AS edit_history
-                    FROM mat_single_request r
-                    LEFT JOIN mat_item_group mig ON mig.id = r.material_group_id
-                    LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
-                    LEFT JOIN mst_user u ON u.user_id = r.created_by
-                    LEFT JOIN LATERAL (
+                          COALESCE(approval_2_user.fullname, approval_2_user.username, r.approval_2_user_id) AS approval_2_user_name,
+                          r.approval_2_status,
+                          r.approval_3_user_id,
+                          COALESCE(approval_3_user.fullname, approval_3_user.username, r.approval_3_user_id) AS approval_3_user_name,
+                          r.approval_3_status,
+                          ${
+                              includeReworkFields
+                                  ? SINGLE_REQUEST_REWORK_SELECT_FIELDS
+                                  : SINGLE_REQUEST_LEGACY_REWORK_SELECT_FIELDS
+                          },
+                          ${
+                              includeEditHistory
+                                  ? "COALESCE(edit_history_rows.edit_history, '[]'::jsonb) AS edit_history"
+                                : "'[]'::jsonb AS edit_history"
+                        }
+                      FROM mat_single_request r
+                      LEFT JOIN mat_item_group mig ON mig.id = r.material_group_id
+                      LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
+                      LEFT JOIN mst_user u ON u.user_id = r.created_by
+                      LEFT JOIN mst_user approval_1_user ON approval_1_user.user_id = r.approval_1_user_id
+                      LEFT JOIN mst_user approval_2_user ON approval_2_user.user_id = r.approval_2_user_id
+                      LEFT JOIN mst_user approval_3_user ON approval_3_user.user_id = r.approval_3_user_id
+                      ${
+                          includeReworkFields
+                              ? "LEFT JOIN mst_user rework_by ON rework_by.user_id = r.rework_by_user_id"
+                              : ""
+                      }
+                      ${
+                        includeEditHistory
+                            ? `LEFT JOIN LATERAL (
                         SELECT
                             jsonb_agg(
                                 jsonb_build_object(
@@ -651,6 +1002,7 @@ const GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY = `SELECT
                                     'request_no', eh.request_no,
                                     'approval_stage', eh.approval_stage,
                                     'approved_by_user_id', eh.approved_by_user_id,
+                                    'approved_by_username', COALESCE(au.username, eh.approved_by_user_id),
                                     'approve_remark', eh.approve_remark,
                                     'approved_at', eh.approved_at,
                                     'material_group_id', eh.material_group_id,
@@ -669,8 +1021,11 @@ const GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY = `SELECT
                                 ORDER BY eh.approved_at DESC
                             ) AS edit_history
                         FROM mat_single_request_edit_history eh
+                        LEFT JOIN mst_user au ON au.user_id = eh.approved_by_user_id
                         WHERE eh.request_id = r.id
-                    ) edit_history_rows ON TRUE
+                    ) edit_history_rows ON TRUE`
+                            : ""
+                    }
                     WHERE (
                         COALESCE(r.approval_1_status, 'WAITING') = 'WAITING'
                         OR (
@@ -685,6 +1040,89 @@ const GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY = `SELECT
                         OR UPPER(COALESCE(r.status, '')) IN ('DONE', 'REWORK', 'REJECT', 'REJECTED', 'CANCEL')
                     )
                     ORDER BY r.created_at DESC, r.id DESC`;
+
+const GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY =
+    buildSingleRequestApprovalInboxQuery();
+const GET_SINGLE_REQUEST_APPROVAL_INBOX_LEGACY_QUERY =
+    buildSingleRequestApprovalInboxQuery({ includeEditHistory: false });
+const GET_SINGLE_REQUEST_LIST_PRE_REWORK_QUERY = buildSingleRequestListQuery(
+    "r.created_by = $1",
+    { includeReworkFields: false }
+);
+const GET_SINGLE_REQUEST_APPROVAL_INBOX_PRE_REWORK_QUERY =
+    buildSingleRequestApprovalInboxQuery({ includeReworkFields: false });
+const GET_SINGLE_REQUEST_APPROVAL_INBOX_PRE_REWORK_LEGACY_QUERY =
+    buildSingleRequestApprovalInboxQuery({
+        includeEditHistory: false,
+        includeReworkFields: false,
+    });
+
+const isMissingSingleRequestEditHistoryTableError = error =>
+    error?.code === "42P01" &&
+    /mat_single_request_edit_history/i.test(String(error?.message || ""));
+
+const isMissingSingleRequestReworkColumnsError = error =>
+    error?.code === "42703" &&
+    /rework_(stage|by_user_id|at|reason)/i.test(String(error?.message || ""));
+
+const runSingleRequestListQuery = async (client, whereClause, params = []) => {
+    let includeReworkFields = true;
+
+    while (true) {
+        try {
+            return await client.query(
+                buildSingleRequestListQuery(whereClause, {
+                    includeReworkFields,
+                }),
+                params
+            );
+        } catch (error) {
+            if (
+                includeReworkFields &&
+                isMissingSingleRequestReworkColumnsError(error)
+            ) {
+                includeReworkFields = false;
+                continue;
+            }
+
+            throw error;
+        }
+    }
+};
+
+const runSingleRequestApprovalInboxQuery = async client => {
+    let includeEditHistory = true;
+    let includeReworkFields = true;
+
+    while (true) {
+        try {
+            return await client.query(
+                buildSingleRequestApprovalInboxQuery({
+                    includeEditHistory,
+                    includeReworkFields,
+                })
+            );
+        } catch (error) {
+            if (
+                includeEditHistory &&
+                isMissingSingleRequestEditHistoryTableError(error)
+            ) {
+                includeEditHistory = false;
+                continue;
+            }
+
+            if (
+                includeReworkFields &&
+                isMissingSingleRequestReworkColumnsError(error)
+            ) {
+                includeReworkFields = false;
+                continue;
+            }
+
+            throw error;
+        }
+    }
+};
 
 const GET_ADMINISTRATOR_APPROVER_MASTERS_QUERY = `SELECT
         u.user_id AS requester_user_id,
@@ -702,7 +1140,7 @@ const GET_ADMINISTRATOR_APPROVER_MASTERS_QUERY = `SELECT
         FROM mat_single_request
         WHERE NOT (
             UPPER(COALESCE(approval_3_status, '')) = 'APPROVED'
-            OR UPPER(COALESCE(status, '')) IN ('REJECT', 'REJECTED')
+            OR UPPER(COALESCE(status, '')) IN ('REJECT', 'REJECTED', 'CANCEL')
         )
         GROUP BY created_by
     ) active_requests
@@ -3801,49 +4239,63 @@ const Material = {
                     }
 
                     if (Object.keys(editablePatch).length > 0) {
-                        await client.query(
-                            `INSERT INTO mat_single_request_edit_history (
-                                request_id,
-                                request_no,
-                                approval_stage,
-                                approved_by_user_id,
-                                approve_remark,
-                                approved_at,
-                                material_group_id,
-                                material_sub_group_id,
-                                plant_code,
-                                sloc_code,
-                                material_description,
-                                base_uom,
-                                long_text_1,
-                                long_text_2,
-                                long_text_3,
-                                template_payload,
-                                created_by,
-                                created_at
-                            ) VALUES (
-                                $1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
-                            )`,
-                            [
-                                snapshot.request_id,
-                                snapshot.request_no,
-                                activeStage,
-                                actorUserId ?? null,
-                                safeRemark,
-                                snapshot.material_group_id ?? null,
-                                snapshot.material_sub_group_id ?? null,
-                                snapshot.plant_code ?? null,
-                                snapshot.sloc_code ?? null,
-                                snapshot.material_description ?? null,
-                                snapshot.base_uom ?? null,
-                                snapshot.long_text_1 ?? null,
-                                snapshot.long_text_2 ?? null,
-                                snapshot.long_text_3 ?? null,
-                                snapshot.template_payload ?? null,
-                                snapshot.created_by ?? null,
-                                snapshot.created_at ?? null,
-                            ]
-                        );
+                        try {
+                            await client.query(
+                                `INSERT INTO mat_single_request_edit_history (
+                                    request_id,
+                                    request_no,
+                                    approval_stage,
+                                    approved_by_user_id,
+                                    approve_remark,
+                                    approved_at,
+                                    material_group_id,
+                                    material_sub_group_id,
+                                    plant_code,
+                                    sloc_code,
+                                    material_description,
+                                    base_uom,
+                                    long_text_1,
+                                    long_text_2,
+                                    long_text_3,
+                                    template_payload,
+                                    created_by,
+                                    created_at
+                                ) VALUES (
+                                    $1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                                )`,
+                                [
+                                    snapshot.request_id,
+                                    snapshot.request_no,
+                                    activeStage,
+                                    actorUserId ?? null,
+                                    safeRemark,
+                                    snapshot.material_group_id ?? null,
+                                    snapshot.material_sub_group_id ?? null,
+                                    snapshot.plant_code ?? null,
+                                    snapshot.sloc_code ?? null,
+                                    snapshot.material_description ?? null,
+                                    snapshot.base_uom ?? null,
+                                    snapshot.long_text_1 ?? null,
+                                    snapshot.long_text_2 ?? null,
+                                    snapshot.long_text_3 ?? null,
+                                    snapshot.template_payload ?? null,
+                                    snapshot.created_by ?? null,
+                                    snapshot.created_at ?? null,
+                                ]
+                            );
+                        } catch (historyError) {
+                            if (
+                                isMissingSingleRequestEditHistoryTableError(
+                                    historyError
+                                )
+                            ) {
+                                console.warn(
+                                    `mat_single_request_edit_history is missing; skipping edit history insert for request ${requestId}`
+                                );
+                            } else {
+                                throw historyError;
+                            }
+                        }
 
                         const editablePatchFields = Object.keys(editablePatch);
                         const assignments = editablePatchFields.map(
@@ -4009,6 +4461,7 @@ const Material = {
         templateValues = {},
         attachments = [],
         createdBy,
+        createdByUsername = null,
     }) => {
         const savedFiles = [];
 
@@ -4036,6 +4489,7 @@ const Material = {
                     );
                     const snapshot = buildSingleRequestApprovalSnapshot({
                         requesterUserId: createdBy,
+                        requesterUsername: createdByUsername,
                         approvalMaster: requesterMasterResult.rows[0] || null,
                     });
 
@@ -4163,8 +4617,9 @@ const Material = {
     getSingleRequestsByUser: async createdBy => {
         try {
             return await DBClientWrapper(async client => {
-                const result = await client.query(
-                    buildSingleRequestListQuery("r.created_by = $1"),
+                const result = await runSingleRequestListQuery(
+                    client,
+                    "r.created_by = $1",
                     [createdBy]
                 );
 
@@ -4176,10 +4631,48 @@ const Material = {
         }
     },
 
+    getSingleRequestById: async ({ requestId, actorUserId, actorUsername }) => {
+        try {
+            return await DBClientWrapper(async client => {
+                const result = await runSingleRequestListQuery(
+                    client,
+                    "r.id = $1",
+                    [requestId]
+                );
+                const row = result.rows[0];
+
+                if (!row) {
+                    throw buildSingleRequestApprovalError(
+                        "Single request not found",
+                        404,
+                        "SINGLE_REQUEST_NOT_FOUND"
+                    );
+                }
+
+                if (
+                    !isAdminMaterialApprover(actorUsername) &&
+                    String(row.requester_user_id || "") !==
+                        String(actorUserId || "")
+                ) {
+                    throw buildSingleRequestApprovalError(
+                        "Forbidden: only requester or ADMIN can view this request",
+                        403,
+                        "SINGLE_REQUEST_VIEW_FORBIDDEN"
+                    );
+                }
+
+                return row;
+            });
+        } catch (error) {
+            console.error("Error fetching single request by id:", error);
+            throw error;
+        }
+    },
+
     getSingleRequestApprovalInbox: async (actorUserId, actorUsername) => {
         try {
             return await DBClientWrapper(async client => {
-                const result = await client.query(GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY);
+                const result = await runSingleRequestApprovalInboxQuery(client);
 
                 return filterSingleRequestApprovalInboxRows(result.rows, {
                     actorUserId,
@@ -4191,6 +4684,329 @@ const Material = {
                 "Error fetching single request approval inbox:",
                 error
             );
+            throw error;
+        }
+    },
+
+    requestSingleRequestRework: async ({
+        requestId,
+        actorUserId,
+        actorUsername,
+        reason,
+    }) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const snapshot =
+                        await getLockedSingleRequestApprovalSnapshot(
+                            client,
+                            requestId
+                        );
+                    const activeStage =
+                        resolveSingleRequestApprovalStage(snapshot);
+
+                    if (!isSubmittedSingleRequestStatus(snapshot.status)) {
+                        throw buildSingleRequestApprovalError(
+                            "Single request rework can only be requested while status is Submit",
+                            409,
+                            "SINGLE_REQUEST_REWORK_STATUS_CONFLICT"
+                        );
+                    }
+
+                    if (!activeStage) {
+                        throw buildSingleRequestApprovalError(
+                            "Single request is already processed or not waiting for approval",
+                            409,
+                            "SINGLE_REQUEST_REWORK_CONFLICT"
+                        );
+                    }
+
+                    if (
+                        !canActorApproveSingleRequestStage({
+                            approval: snapshot,
+                            actorUserId,
+                            actorUsername,
+                        })
+                    ) {
+                        throw buildSingleRequestApprovalError(
+                            "Forbidden: only the assigned approver or ADMIN can request rework",
+                            403,
+                            "SINGLE_REQUEST_REWORK_FORBIDDEN"
+                        );
+                    }
+
+                    const patch = buildSingleRequestReworkPatch({
+                        reworkStage: activeStage,
+                        actorUserId,
+                        reason,
+                    });
+
+                    await updateSingleRequestColumns(client, requestId, patch);
+                    await client.query("COMMIT");
+
+                    return {
+                        request_id: Number(requestId),
+                        stage: activeStage,
+                        status: patch.status,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error requesting single request rework:", error);
+            throw error;
+        }
+    },
+
+    rejectSingleRequestByAdmin: async ({
+        requestId,
+        actorUserId,
+        actorUsername,
+        reason,
+    }) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const snapshot =
+                        await getLockedSingleRequestApprovalSnapshot(
+                            client,
+                            requestId
+                        );
+                    const activeStage =
+                        resolveSingleRequestApprovalStage(snapshot);
+
+                    if (!isSubmittedSingleRequestStatus(snapshot.status)) {
+                        throw buildSingleRequestApprovalError(
+                            "Single request reject can only be processed while status is Submit",
+                            409,
+                            "SINGLE_REQUEST_REJECT_STATUS_CONFLICT"
+                        );
+                    }
+
+                    if (!activeStage) {
+                        throw buildSingleRequestApprovalError(
+                            "Single request is already processed or not waiting for approval",
+                            409,
+                            "SINGLE_REQUEST_REJECT_CONFLICT"
+                        );
+                    }
+
+                    if (
+                        !canActorApproveSingleRequestStage({
+                            approval: snapshot,
+                            actorUserId,
+                            actorUsername,
+                        })
+                    ) {
+                        throw buildSingleRequestApprovalError(
+                            "Forbidden: only the assigned approver or ADMIN can reject this request",
+                            403,
+                            "SINGLE_REQUEST_REJECT_FORBIDDEN"
+                        );
+                    }
+
+                    const patch = buildSingleRequestRejectPatch({
+                        rejectStage: activeStage,
+                        reason,
+                    });
+
+                    await updateSingleRequestColumns(client, requestId, patch);
+                    await client.query("COMMIT");
+
+                    return {
+                        request_id: Number(requestId),
+                        stage: activeStage,
+                        status: patch.status,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error rejecting single request by admin:", error);
+            throw error;
+        }
+    },
+
+    saveSingleRequestRework: async ({
+        requestId,
+        actorUserId,
+        actorUsername,
+        editedRequest,
+        attachments = null,
+    }) => {
+        const savedFiles = [];
+        const removedFilePaths = [];
+
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const snapshot =
+                        await getLockedSingleRequestApprovalSnapshot(
+                            client,
+                            requestId
+                        );
+
+                    if (String(snapshot.status || "").trim().toUpperCase() !== "REWORK") {
+                        throw buildSingleRequestApprovalError(
+                            "Single request rework can only be saved while status is Rework",
+                            409,
+                            "SINGLE_REQUEST_REWORK_SAVE_CONFLICT"
+                        );
+                    }
+
+                    if (!snapshot.rework_stage) {
+                        throw buildSingleRequestApprovalError(
+                            "Single request rework stage is missing",
+                            409,
+                            "SINGLE_REQUEST_REWORK_STAGE_MISSING"
+                        );
+                    }
+
+                    if (
+                        !canActorReviseSingleRequest({
+                            request: snapshot,
+                            actorUserId,
+                            actorUsername,
+                        })
+                    ) {
+                        throw buildSingleRequestApprovalError(
+                            "Forbidden: only requester or ADMIN can revise this request",
+                            403,
+                            "SINGLE_REQUEST_REVISE_FORBIDDEN"
+                        );
+                    }
+
+                    const editablePatch =
+                        await prepareSingleRequestApprovalEditPatch({
+                            snapshot,
+                            editedRequest,
+                            allowMaterialGroupChange: true,
+                            getSubGroupById: Material.getSubGroupById,
+                            validateMaterialRequestTemplate:
+                                MaterialTemplate.validateMaterialRequestTemplate,
+                        });
+                    const revisedPatch = buildSingleRequestRevisedPatch(
+                        snapshot.rework_stage
+                    );
+                    const attachmentInstructions = Array.isArray(attachments)
+                        ? { newAttachments: attachments }
+                        : attachments &&
+                            typeof attachments === "object" &&
+                            !Array.isArray(attachments)
+                          ? attachments
+                          : null;
+
+                    await updateSingleRequestColumns(client, requestId, {
+                        ...editablePatch,
+                        ...revisedPatch,
+                        rework_stage: snapshot.rework_stage,
+                        rework_by_user_id: snapshot.rework_by_user_id ?? null,
+                        rework_reason: snapshot.rework_reason ?? null,
+                    });
+
+                    if (attachmentInstructions) {
+                        const existingAttachments =
+                            await getSingleRequestAttachments(client, requestId);
+                        const keepAttachmentIds = Array.isArray(
+                            attachmentInstructions.keepAttachmentIds
+                        )
+                            ? new Set(
+                                  attachmentInstructions.keepAttachmentIds.map(id =>
+                                      String(id)
+                                  )
+                              )
+                            : null;
+                        const newAttachments = Array.isArray(
+                            attachmentInstructions.newAttachments
+                        )
+                            ? attachmentInstructions.newAttachments
+                            : [];
+                        const keptAttachments = keepAttachmentIds
+                            ? existingAttachments.filter(attachment =>
+                                  keepAttachmentIds.has(String(attachment.id))
+                              )
+                            : existingAttachments;
+                        const removedAttachments = keepAttachmentIds
+                            ? existingAttachments.filter(
+                                  attachment =>
+                                      !keepAttachmentIds.has(
+                                          String(attachment.id)
+                                      )
+                              )
+                            : [];
+
+                        if (
+                            keptAttachments.length + newAttachments.length >
+                            SINGLE_REQUEST_MAX_ATTACHMENTS
+                        ) {
+                            throw buildSingleRequestApprovalError(
+                                `Maximum ${SINGLE_REQUEST_MAX_ATTACHMENTS} attachments are allowed`,
+                                400,
+                                "SINGLE_REQUEST_ATTACHMENT_LIMIT_EXCEEDED"
+                            );
+                        }
+
+                        if (removedAttachments.length > 0) {
+                            const removedAttachmentIds = removedAttachments.map(
+                                attachment => attachment.id
+                            );
+
+                            await client.query(
+                                `DELETE FROM mat_single_request_attachment
+                                 WHERE request_id = $1 AND id = ANY($2)`,
+                                [requestId, removedAttachmentIds]
+                            );
+                            removedFilePaths.push(
+                                ...removedAttachments.map(
+                                    attachment => attachment.file_path
+                                )
+                            );
+                        }
+
+                        for (const attachment of newAttachments) {
+                            await insertSingleRequestAttachment(
+                                client,
+                                requestId,
+                                attachment
+                            );
+                        }
+
+                        savedFiles.push(
+                            ...persistSingleRequestAttachmentFiles(newAttachments)
+                        );
+                    }
+
+                    await client.query("COMMIT");
+                    deleteSingleRequestStoredFiles(removedFilePaths);
+
+                    return {
+                        request_id: Number(requestId),
+                        stage: snapshot.rework_stage,
+                        status: revisedPatch.status,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+                });
+        } catch (error) {
+            for (const savedFile of savedFiles) {
+                if (fs.existsSync(savedFile)) {
+                    fs.unlinkSync(savedFile);
+                }
+            }
+
+            console.error("Error saving single request rework:", error);
             throw error;
         }
     },
@@ -4297,7 +5113,7 @@ const Material = {
                  WHERE created_by = $1
                    AND NOT (
                        UPPER(COALESCE(approval_3_status, '')) = 'APPROVED'
-                       OR UPPER(COALESCE(status, '')) IN ('REJECT', 'REJECTED')
+                       OR UPPER(COALESCE(status, '')) IN ('REJECT', 'REJECTED', 'CANCEL')
                    )
                  ORDER BY created_at DESC, id DESC
                  FOR UPDATE`,
@@ -4435,12 +5251,21 @@ Material.__private = {
                             approval_3_status
                         )`,
     GET_SINGLE_REQUEST_LIST_QUERY: buildSingleRequestListQuery("r.created_by = $1"),
+    GET_SINGLE_REQUEST_LIST_PRE_REWORK_QUERY,
     GET_ADMINISTRATOR_APPROVER_MASTERS_QUERY,
     GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY,
+    GET_SINGLE_REQUEST_APPROVAL_INBOX_LEGACY_QUERY,
+    GET_SINGLE_REQUEST_APPROVAL_INBOX_PRE_REWORK_QUERY,
+    GET_SINGLE_REQUEST_APPROVAL_INBOX_PRE_REWORK_LEGACY_QUERY,
     assertSingleRequestAssignableStatus,
     buildSingleRequestApproverAssignmentPatch,
+    updateSingleRequestColumns,
+    normalizeSingleRequestAttachmentRelativePath,
     prepareSingleRequestApprovalEditPatch,
+    buildSingleRequestRejectPatch,
     LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
+    isMissingSingleRequestEditHistoryTableError,
+    isMissingSingleRequestReworkColumnsError,
 };
 
 module.exports = Material;
