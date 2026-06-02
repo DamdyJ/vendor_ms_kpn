@@ -140,6 +140,11 @@ router.get("/file/:filename", MaterialController.serveFile);
 router.get("/sync-sap", AuthToken.authSession, MaterialController.syncSAPData);
 
 // Single material request endpoints
+router.get(
+    "/requests/single/active-check",
+    AuthToken.authSession,
+    MaterialController.checkActiveSingleRequest
+);
 router.post(
     "/requests/single",
     AuthToken.authSession,

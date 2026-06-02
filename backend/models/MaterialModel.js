@@ -15,6 +15,7 @@ const TRANS = require("../config/transaction.js");
 const {
     INITIAL_APPROVAL_STATUS,
     MDM_MATERIAL_GROUP_NAME,
+    SINGLE_REQUEST_TICKET_TYPES,
     buildSingleRequestRejectPatch,
     buildSingleRequestRevisedPatch,
     buildSingleRequestReworkPatch,
@@ -26,8 +27,10 @@ const {
     canActorReviseSingleRequest,
     canEditApprovalAssignee,
     filterSingleRequestApprovalInboxRows,
+    getApprovalStageFieldPrefix,
     isAdminMaterialApprover,
     isSingleRequestApprovalInboxEligible,
+    normalizeSingleRequestTicketType,
     resolveSingleRequestApprovalStage,
 } = require("../helper/singleRequestApproval.js");
 
@@ -48,6 +51,19 @@ const SINGLE_REQUEST_EDITABLE_FIELDS = [
     "long_text_2",
     "long_text_3",
     "template_payload",
+];
+
+const SINGLE_REQUEST_CHANGE_EDITABLE_FIELDS = [
+    "material_description",
+    "base_uom",
+    "template_payload",
+    "change_extend_reason",
+];
+
+const SINGLE_REQUEST_EXTEND_EDITABLE_FIELDS = [
+    "plant_code",
+    "sloc_code",
+    "change_extend_reason",
 ];
 
 const SINGLE_REQUEST_LONG_TEXT_FIELD_KEYS = [
@@ -75,9 +91,48 @@ const SINGLE_REQUEST_APPROVAL_EDIT_REQUEST_FIELD_KEYS = new Set([
     "long_text_3",
 ]);
 
+const SINGLE_REQUEST_APPROVAL_EDIT_CHANGE_FIELD_KEYS = new Set([
+    "material_number",
+    "material_type",
+    "material_group",
+    "material_description",
+    "base_uom",
+    "base_unit_of_measure",
+    "long_text_1",
+    "long_text_2",
+    "long_text_3",
+]);
+
+const SINGLE_REQUEST_APPROVAL_EDIT_EXTEND_FIELD_KEYS = new Set([
+    "material_description",
+    "base_uom",
+    "base_unit_of_measure",
+    "plant",
+    "storage_location",
+    "long_text_1",
+    "long_text_2",
+    "long_text_3",
+]);
+
 const SINGLE_REQUEST_REQUEST_FIELD_ALIASES = {
     base_uom: "base_unit_of_measure",
     storageLocation: "storage_location",
+    longText1: "long_text_1",
+    longText2: "long_text_2",
+    longText3: "long_text_3",
+};
+
+const SINGLE_REQUEST_EDITED_REQUEST_ALIASES = {
+    ticketType: "ticket_type",
+    materialCode: "material_code",
+    changeExtendReason: "change_extend_reason",
+    materialGroupId: "material_group_id",
+    materialSubGroupId: "material_sub_group_id",
+    plantCode: "plant_code",
+    slocCode: "sloc_code",
+    materialDescription: "material_description",
+    baseUom: "base_uom",
+    templatePayload: "template_payload",
     longText1: "long_text_1",
     longText2: "long_text_2",
     longText3: "long_text_3",
@@ -89,6 +144,25 @@ const normalizeSingleRequestEditableValue = (field, value) => {
     }
 
     return value ?? null;
+};
+
+const resolveSingleRequestEditableFields = ({
+    ticketType,
+    allowMaterialGroupChange = false,
+} = {}) => {
+    const normalizedTicketType = normalizeSingleRequestTicketType(ticketType);
+
+    if (normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.CHANGE) {
+        return SINGLE_REQUEST_CHANGE_EDITABLE_FIELDS;
+    }
+
+    if (normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.EXTEND) {
+        return SINGLE_REQUEST_EXTEND_EDITABLE_FIELDS;
+    }
+
+    return allowMaterialGroupChange
+        ? [...SINGLE_REQUEST_EDITABLE_FIELDS, "material_group_id"]
+        : SINGLE_REQUEST_EDITABLE_FIELDS;
 };
 
 const normalizeSingleRequestRequestFields = payload => {
@@ -112,9 +186,35 @@ const normalizeSingleRequestRequestFields = payload => {
     return normalized;
 };
 
+const normalizeSingleRequestEditedRequest = payload => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return {};
+    }
+
+    const normalized = { ...payload };
+
+    for (const [legacyKey, canonicalKey] of Object.entries(
+        SINGLE_REQUEST_EDITED_REQUEST_ALIASES
+    )) {
+        if (
+            normalized[canonicalKey] === undefined &&
+            normalized[legacyKey] !== undefined
+        ) {
+            normalized[canonicalKey] = normalized[legacyKey];
+        }
+
+        if (legacyKey !== canonicalKey) {
+            delete normalized[legacyKey];
+        }
+    }
+
+    return normalized;
+};
+
 const isSingleRequestApprovalEditValidationErrorVisible = (
     error = {},
-    validation = {}
+    validation = {},
+    ticketType
 ) => {
     const fieldKey = error.fieldKey ?? error.field_key;
 
@@ -122,13 +222,58 @@ const isSingleRequestApprovalEditValidationErrorVisible = (
         return false;
     }
 
+    const normalizedTicketType = normalizeSingleRequestTicketType(ticketType);
+
+    if (normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.CHANGE) {
+        const matchingTemplateField = Array.isArray(validation.template?.fields)
+            ? validation.template.fields.find(
+                  field => (field?.fieldKey ?? field?.field_key) === fieldKey
+              )
+            : null;
+        const templateValues = validation.templateValues || validation.normalizedTemplateValues || {};
+        const templateValue = templateValues[fieldKey];
+        const hasTemplateValue =
+            templateValue !== undefined &&
+            templateValue !== null &&
+            !(
+                typeof templateValue === "string" &&
+                templateValue.trim() === ""
+            );
+        const isMissingTemplateValueError =
+            Boolean(matchingTemplateField?.isMandatory) &&
+            !hasTemplateValue &&
+            /wajib diisi/i.test(String(error.message || ""));
+
+        if (isMissingTemplateValueError) {
+            return false;
+        }
+
+        const isRequestRuleError = (validation.requestFieldRules || []).some(
+            rule => (rule?.fieldKey ?? rule?.field_key) === fieldKey
+        );
+
+        if (
+            isRequestRuleError &&
+            !SINGLE_REQUEST_APPROVAL_EDIT_CHANGE_FIELD_KEYS.has(fieldKey)
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
     const isRequestRuleError = (validation.requestFieldRules || []).some(
         rule => (rule?.fieldKey ?? rule?.field_key) === fieldKey
     );
 
+    const applicableFieldKeys =
+        normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.EXTEND
+            ? SINGLE_REQUEST_APPROVAL_EDIT_EXTEND_FIELD_KEYS
+            : SINGLE_REQUEST_APPROVAL_EDIT_REQUEST_FIELD_KEYS;
+
     if (
         isRequestRuleError &&
-        !SINGLE_REQUEST_APPROVAL_EDIT_REQUEST_FIELD_KEYS.has(fieldKey)
+        !applicableFieldKeys.has(fieldKey)
     ) {
         return false;
     }
@@ -186,7 +331,62 @@ const normalizeSingleRequestTemplatePayload = payload => {
         return {};
     }
 
-    return { ...payload };
+    const normalized = { ...payload };
+
+    if (
+        normalized.requestFields &&
+        typeof normalized.requestFields === "object" &&
+        !Array.isArray(normalized.requestFields)
+    ) {
+        normalized.requestFields = normalizeSingleRequestRequestFields(
+            normalized.requestFields
+        );
+    }
+
+    if (
+        normalized.templateValues &&
+        typeof normalized.templateValues === "object" &&
+        !Array.isArray(normalized.templateValues)
+    ) {
+        normalized.templateValues = {
+            ...normalized.templateValues,
+        };
+    }
+
+    return normalized;
+};
+
+const readSingleRequestTemplateRequestFields = payload => {
+    const normalizedPayload = normalizeSingleRequestTemplatePayload(payload);
+    return normalizeSingleRequestRequestFields(
+        normalizedPayload.requestFields || {}
+    );
+};
+
+const resolveSingleRequestMaterialCode = source => {
+    if (!source || typeof source !== "object") {
+        return null;
+    }
+
+    const directMaterialCode = String(
+        source.material_code ?? source.materialCode ?? ""
+    ).trim();
+
+    if (directMaterialCode) {
+        return directMaterialCode;
+    }
+
+    const requestFields = readSingleRequestTemplateRequestFields(
+        source.template_payload ?? source.templatePayload ?? source
+    );
+    const payloadMaterialCode = String(
+        requestFields.material_number ??
+            requestFields.material_code ??
+            requestFields.materialCode ??
+            ""
+    ).trim();
+
+    return payloadMaterialCode || null;
 };
 
 const SINGLE_REQUEST_MAX_ATTACHMENTS = 3;
@@ -195,6 +395,13 @@ const SINGLE_REQUEST_PUBLIC_DIRECTORY = path.join(
     "backend",
     "public"
 );
+const SINGLE_REQUEST_SQL_NOW_EXPRESSION = Object.freeze({ __sql: "NOW()" });
+const SINGLE_REQUEST_MATERIAL_CODE_SQL = `NULLIF(COALESCE(
+            r.template_payload #>> '{requestFields,material_number}',
+            r.template_payload #>> '{requestFields,material_code}',
+            r.template_payload #>> '{requestFields,materialCode}',
+            ''
+        ), '')`;
 const isRawSqlExpression = value =>
     Boolean(
         value &&
@@ -269,6 +476,9 @@ const LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY = `SELECT
             r.created_by,
             r.created_at,
             r.status,
+            r.ticket_type,
+            ${SINGLE_REQUEST_MATERIAL_CODE_SQL} AS material_code,
+            r.change_extend_reason,
             mig.code AS material_group_code,
             r.created_by AS requester_user_id,
             r.approval_1_user_id,
@@ -315,6 +525,56 @@ const assertSingleRequestAssignableStatus = snapshot => {
         409,
         "SINGLE_REQUEST_APPROVER_ASSIGNMENT_STATUS_CONFLICT"
     );
+};
+
+const resolveCreateSingleRequestAssignedTo = ticketType => {
+    const normalizedTicketType = normalizeSingleRequestTicketType(ticketType);
+
+    if (normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.EXTEND) {
+        return "Approval 3";
+    }
+
+    return "Approval 1";
+};
+
+const getSingleRequestAllowedApprovalStages = ticketType => {
+    const normalizedTicketType = normalizeSingleRequestTicketType(ticketType);
+
+    if (normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.CHANGE) {
+        return ["Approval 1", "Approval 3"];
+    }
+
+    if (normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.EXTEND) {
+        return ["Approval 3"];
+    }
+
+    return ["Approval 1", "Approval 2"];
+};
+
+const shouldPersistSingleRequestEditHistory = ticketType =>
+    normalizeSingleRequestTicketType(ticketType) ===
+    SINGLE_REQUEST_TICKET_TYPES.CREATE;
+
+const buildSingleRequestFinalApprovalPatch = ({
+    stage,
+    actorUserId,
+    remark,
+} = {}) => {
+    const fieldPrefix =
+        stage === "Approval 1"
+            ? "approval_1"
+            : stage === "Approval 2"
+              ? "approval_2"
+              : "approval_3";
+
+    return {
+        status: "DONE",
+        assigned_to: "Completed",
+        [`${fieldPrefix}_user_id`]: actorUserId ?? null,
+        [`${fieldPrefix}_at`]: SINGLE_REQUEST_SQL_NOW_EXPRESSION,
+        [`${fieldPrefix}_status`]: "APPROVED",
+        [`${fieldPrefix}_remark`]: remark ?? null,
+    };
 };
 
 const buildSingleRequestApproverAssignmentPatch = (payload = {}) => {
@@ -538,9 +798,14 @@ const prepareSingleRequestApprovalEditPatch = async ({
     getSubGroupById,
     validateMaterialRequestTemplate,
 } = {}) => {
-    const editableFields = allowMaterialGroupChange
-        ? [...SINGLE_REQUEST_EDITABLE_FIELDS, "material_group_id"]
-        : SINGLE_REQUEST_EDITABLE_FIELDS;
+    editedRequest = normalizeSingleRequestEditedRequest(editedRequest);
+    const ticketType = normalizeSingleRequestTicketType(snapshot.ticket_type);
+    const lockedMaterialCode = resolveSingleRequestMaterialCode(snapshot);
+    const lockedChangeExtendReason = snapshot.change_extend_reason ?? null;
+    const editableFields = resolveSingleRequestEditableFields({
+        ticketType,
+        allowMaterialGroupChange,
+    });
     const editablePatch = editableFields.reduce(
         (patch, field) => {
             if (
@@ -610,6 +875,27 @@ const prepareSingleRequestApprovalEditPatch = async ({
         return {};
     }
 
+    if (ticketType === SINGLE_REQUEST_TICKET_TYPES.EXTEND) {
+        if (
+            lockedChangeExtendReason != null &&
+            !Object.prototype.hasOwnProperty.call(
+                editablePatch,
+                "change_extend_reason"
+            )
+        ) {
+            editablePatch.change_extend_reason = lockedChangeExtendReason;
+            delete editablePatch.change_extend_reason;
+        }
+        if (
+            lockedMaterialCode &&
+            Object.prototype.hasOwnProperty.call(editedRequest, "material_code")
+        ) {
+            editablePatch.material_code = lockedMaterialCode;
+            delete editablePatch.material_code;
+        }
+        return editablePatch;
+    }
+
     if (
         Object.prototype.hasOwnProperty.call(
             editablePatch,
@@ -654,8 +940,9 @@ const prepareSingleRequestApprovalEditPatch = async ({
         "material_description",
         "base_uom",
         "template_payload",
-        "plant_code",
-        "sloc_code",
+        ...(ticketType === SINGLE_REQUEST_TICKET_TYPES.CREATE
+            ? ["plant_code", "sloc_code"]
+            : []),
         "long_text_1",
         "long_text_2",
         "long_text_3",
@@ -669,6 +956,9 @@ const prepareSingleRequestApprovalEditPatch = async ({
     const currentTemplatePayload = normalizeSingleRequestTemplatePayload(
         snapshot.template_payload
     );
+    const currentRequestFields = readSingleRequestTemplateRequestFields(
+        currentTemplatePayload
+    );
     const mergedTemplatePayload = Object.prototype.hasOwnProperty.call(
         editablePatch,
         "template_payload"
@@ -676,6 +966,11 @@ const prepareSingleRequestApprovalEditPatch = async ({
         ? normalizeSingleRequestTemplatePayload(editablePatch.template_payload)
         : currentTemplatePayload;
     const requestFields = normalizeSingleRequestRequestFields({
+        ...currentRequestFields,
+        material_number:
+            currentRequestFields.material_number ?? lockedMaterialCode,
+        material_group:
+            currentRequestFields.material_group ?? selectedMaterialGroupCode,
         material_description:
             editablePatch.material_description ?? snapshot.material_description,
         base_uom: editablePatch.base_uom ?? snapshot.base_uom,
@@ -692,7 +987,7 @@ const prepareSingleRequestApprovalEditPatch = async ({
         templateValues: mergedTemplatePayload.templateValues || {},
     });
     const validationErrors = (validation.errors || []).filter(
-        error => isSingleRequestApprovalEditValidationErrorVisible(error, validation)
+        error => isSingleRequestApprovalEditValidationErrorVisible(error, validation, ticketType)
     );
 
     if (validationErrors.length > 0) {
@@ -846,6 +1141,8 @@ const buildSingleRequestSelectFields = ({
 } = {}) => `r.id,
                           r.request_no AS ticket_number,
                           r.ticket_type,
+                          ${SINGLE_REQUEST_MATERIAL_CODE_SQL} AS material_code,
+                          r.change_extend_reason,
                           r.material_group_id,
                           mig.code AS material_group_code,
                           mig.name AS material_group_name,
@@ -942,6 +1239,8 @@ const buildSingleRequestApprovalInboxQuery = ({
                         r.id,
                         r.request_no AS ticket_number,
                         r.ticket_type,
+                        ${SINGLE_REQUEST_MATERIAL_CODE_SQL} AS material_code,
+                        r.change_extend_reason,
                         r.material_group_id,
                         mig.code AS material_group_code,
                         mig.name AS material_group_name,
@@ -1931,9 +2230,9 @@ const Material = {
                         m.long_text,
                         m.unit_of_measurement,
                         CASE
-                            WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
-                            WHEN m.description IS NOT NULL THEN m.description
-                            WHEN m.long_text IS NOT NULL THEN m.long_text
+                            WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                            WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                            WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
                             ELSE NULL
                         END as combined_description,
                         m.alias1,
@@ -2093,9 +2392,9 @@ const Material = {
                             m.long_text,
                             m.unit_of_measurement,
                             CASE
-                                WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
-                                WHEN m.description IS NOT NULL THEN m.description
-                                WHEN m.long_text IS NOT NULL THEN m.long_text
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
                                 ELSE NULL
                             END AS combined_description,
                             CASE
@@ -2113,8 +2412,10 @@ const Material = {
                             m.updated_at,
                             m.dfFromClient,
                             m.created_by,
+                            mis.id AS "subGroupId",
                             mis.code AS "subGroupCode",
                             mis.name AS "subGroupName",
+                            mig.id AS "groupId",
                             mig.code AS "groupCode",
                             mig.name AS "groupName",
                             ts_rank_cd(
@@ -2153,9 +2454,9 @@ const Material = {
                             m.long_text,
                             m.unit_of_measurement,
                             CASE
-                                WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
-                                WHEN m.description IS NOT NULL THEN m.description
-                                WHEN m.long_text IS NOT NULL THEN m.long_text
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
                                 ELSE NULL
                             END AS combined_description,
                             CASE
@@ -2173,8 +2474,10 @@ const Material = {
                             m.updated_at,
                             m.dfFromClient,
                             m.created_by,
+                            mis.id AS "subGroupId",
                             mis.code AS "subGroupCode",
                             mis.name AS "subGroupName",
+                            mig.id AS "groupId",
                             mig.code AS "groupCode",
                             mig.name AS "groupName"
                         FROM mat_sap_data m
@@ -2281,10 +2584,12 @@ const Material = {
                             m.description,
                             m.long_text,
                             m.unit_of_measurement,
+                            m.plant_code,
+                            m.sloc_code,
                             CASE
-                                WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
-                                WHEN m.description IS NOT NULL THEN m.description
-                                WHEN m.long_text IS NOT NULL THEN m.long_text
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
                                 ELSE NULL
                             END AS combined_description,
                             CASE
@@ -2302,8 +2607,10 @@ const Material = {
                             m.updated_at,
                             m.dfFromClient,
                             m.created_by,
+                            mis.id AS "subGroupId",
                             mis.code AS "subGroupCode",
                             mis.name AS "subGroupName",
+                            mig.id AS "groupId",
                             mig.code AS "groupCode",
                             mig.name AS "groupName",
                             ts_rank_cd(
@@ -2365,10 +2672,12 @@ const Material = {
                             m.description,
                             m.long_text,
                             m.unit_of_measurement,
+                            m.plant_code,
+                            m.sloc_code,
                             CASE
-                                WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
-                                WHEN m.description IS NOT NULL THEN m.description
-                                WHEN m.long_text IS NOT NULL THEN m.long_text
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
                                 ELSE NULL
                             END AS combined_description,
                             CASE
@@ -2386,8 +2695,10 @@ const Material = {
                             m.updated_at,
                             m.dfFromClient,
                             m.created_by,
+                            mis.id AS "subGroupId",
                             mis.code AS "subGroupCode",
                             mis.name AS "subGroupName",
+                            mig.id AS "groupId",
                             mig.code AS "groupCode",
                             mig.name AS "groupName"
                         FROM mat_sap_data m
@@ -2475,10 +2786,10 @@ const Material = {
                         m.alias3,
                         m.unit_of_measurement,
                         CASE
-                            WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
-                            WHEN m.description IS NOT NULL THEN m.description
-                            WHEN m.long_text IS NOT NULL THEN m.long_text
-                            ELSE m.name
+                            WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                            WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                            WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
+                            ELSE NULL
                         END AS combined_description
                     FROM mat_sap_data m
                     LEFT JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
@@ -2555,6 +2866,41 @@ const Material = {
                     [materialId]
                 );
                 return result.rows[0];
+            });
+        } catch (error) {
+            console.error(error);
+            throw error;
+        }
+    },
+
+    getMaterialByCode: async materialCode => {
+        try {
+            return await DBClientWrapper(async client => {
+                const result = await client.query(
+                    `
+                    SELECT
+                        m.id,
+                        m.code,
+                        m.name,
+                        m.description,
+                        m.type,
+                        m.unit_of_measurement,
+                        m.plant_code,
+                        m.sloc_code,
+                        mis.id as "subGroupId",
+                        mis.code as "subGroupCode",
+                        mis.name as "subGroupName",
+                        mig.id as "groupId",
+                        mig.code as "groupCode",
+                        mig.name as "groupName"
+                    FROM mat_sap_data m
+                    JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                    JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                    WHERE m.code = $1
+                `,
+                    [materialCode]
+                );
+                return result.rows[0] || null;
             });
         } catch (error) {
             console.error(error);
@@ -3465,9 +3811,9 @@ const Material = {
                             m.long_text,
                             m.unit_of_measurement,
                             CASE
-                                WHEN m.description IS NOT NULL AND m.long_text IS NOT NULL THEN CONCAT(m.description, ' - ', m.long_text)
-                                WHEN m.description IS NOT NULL THEN m.description
-                                WHEN m.long_text IS NOT NULL THEN m.long_text
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
                                 ELSE NULL
                             END AS combined_description,
                             CASE
@@ -3762,7 +4108,7 @@ const Material = {
         try {
             return await DBClientWrapper(async client => {
                 const res = await client.query(
-                    "SELECT id, deleted_at FROM mat_item_group WHERE id = $1",
+                    "SELECT id, code, name, deleted_at FROM mat_item_group WHERE id = $1",
                     [groupId]
                 );
                 return res.rows[0] || null;
@@ -4204,9 +4550,17 @@ const Material = {
                             client,
                             requestId
                         );
+                    const normalizedTicketType =
+                        normalizeSingleRequestTicketType(snapshot.ticket_type);
                     const activeStage =
                         resolveSingleRequestApprovalStage(snapshot);
+                    const allowedStages =
+                        getSingleRequestAllowedApprovalStages(
+                            normalizedTicketType
+                        );
                     const safeRemark = remark ?? null;
+                    const currentChangeExtendReason =
+                        snapshot.change_extend_reason ?? null;
                     const editablePatch =
                         await prepareSingleRequestApprovalEditPatch({
                             snapshot,
@@ -4216,7 +4570,7 @@ const Material = {
                                 MaterialTemplate.validateMaterialRequestTemplate,
                         });
 
-                    if (!["Approval 1", "Approval 2"].includes(activeStage)) {
+                    if (!allowedStages.includes(activeStage)) {
                         throw buildSingleRequestApprovalError(
                             "Single request is already processed or not waiting for admin approval",
                             409,
@@ -4238,7 +4592,12 @@ const Material = {
                         );
                     }
 
-                    if (Object.keys(editablePatch).length > 0) {
+                    if (
+                        shouldPersistSingleRequestEditHistory(
+                            normalizedTicketType
+                        ) &&
+                        Object.keys(editablePatch).length > 0
+                    ) {
                         try {
                             await client.query(
                                 `INSERT INTO mat_single_request_edit_history (
@@ -4296,7 +4655,9 @@ const Material = {
                                 throw historyError;
                             }
                         }
+                    }
 
+                    if (Object.keys(editablePatch).length > 0) {
                         const editablePatchFields = Object.keys(editablePatch);
                         const assignments = editablePatchFields.map(
                             (field, index) => `${field} = $${index + 2}`
@@ -4317,9 +4678,88 @@ const Material = {
                     }
 
                     if (activeStage === "Approval 1") {
+                        if (
+                            normalizedTicketType ===
+                            SINGLE_REQUEST_TICKET_TYPES.CHANGE
+                        ) {
+                            const mdmUser =
+                                snapshot.approval_3_user_id != null
+                                    ? {
+                                          user_id:
+                                              snapshot.approval_3_user_id,
+                                      }
+                                    : await getRandomMdmMaterialUser(client);
+                            const approval3UserId =
+                                mdmUser?.user_id ??
+                                snapshot.approval_3_user_id ??
+                                null;
+
+                            const approvalResult = await client.query(
+                                `UPDATE mat_single_request
+                                SET approval_1_user_id = COALESCE(approval_1_user_id, $2),
+                                    approval_1_at = NOW(),
+                                    approval_1_status = 'APPROVED',
+                                    approval_1_remark = $3,
+                                    approval_3_user_id = $4,
+                                    approval_3_status = 'WAITING',
+                                    updated_at = NOW()
+                                WHERE id = $1
+                                    AND COALESCE(approval_1_status, 'WAITING') = 'WAITING'
+                                RETURNING
+                                    id AS request_id,
+                                    created_by AS requester_user_id,
+                                    approval_1_user_id,
+                                    approval_1_status,
+                                    approval_1_at,
+                                    approval_1_remark,
+                                    approval_2_user_id,
+                                    approval_2_status,
+                                    approval_2_at,
+                                    approval_2_remark,
+                                    approval_3_user_id,
+                                    approval_3_status,
+                                    approval_3_at,
+                                    approval_3_remark`,
+                                [
+                                    requestId,
+                                    actorUserId,
+                                    safeRemark,
+                                    approval3UserId,
+                                ]
+                            );
+
+                            if (approvalResult.rowCount !== 1) {
+                                throw buildSingleRequestApprovalError(
+                                    "Single request is already processed or not waiting for admin approval",
+                                    409,
+                                    "SINGLE_REQUEST_APPROVAL_CONFLICT"
+                                );
+                            }
+
+                            await syncSingleRequestApprovalSnapshot(
+                                client,
+                                requestId,
+                                approvalResult.rows[0],
+                                "Approval 3"
+                            );
+                            await client.query("COMMIT");
+
+                            return {
+                                request_id: approvalResult.rows[0].request_id,
+                                stage: "Approval 1",
+                                next_stage: "Approval 3",
+                                approval_3_user_id:
+                                    approvalResult.rows[0]
+                                        .approval_3_user_id,
+                                approval_3_status:
+                                    approvalResult.rows[0]
+                                        .approval_3_status,
+                            };
+                        }
+
                         const approvalResult = await client.query(
                             `UPDATE mat_single_request
-                            SET approval_1_user_id = $2,
+                            SET approval_1_user_id = COALESCE(approval_1_user_id, $2),
                                 approval_1_at = NOW(),
                                 approval_1_status = 'APPROVED',
                                 approval_1_remark = $3,
@@ -4367,81 +4807,239 @@ const Material = {
                         };
                     }
 
-                    const mdmUser = await getRandomMdmMaterialUser(client);
+                    if (activeStage === "Approval 2") {
+                        const mdmUser = await getRandomMdmMaterialUser(client);
 
-                    if (!mdmUser) {
-                        throw buildSingleRequestApprovalError(
-                            "No active MDM_MATERIAL user found for Approval 3 assignment",
-                            409,
-                            "SINGLE_REQUEST_APPROVAL_NO_MDM_USER"
+                        if (!mdmUser) {
+                            throw buildSingleRequestApprovalError(
+                                "No active MDM_MATERIAL user found for Approval 3 assignment",
+                                409,
+                                "SINGLE_REQUEST_APPROVAL_NO_MDM_USER"
+                            );
+                        }
+
+                        const autoAssignedApproval3 =
+                            buildAutoAssignedApproval3({
+                                approval3UserId: mdmUser.user_id,
+                            });
+
+                        const approvalResult = await client.query(
+                            `UPDATE mat_single_request
+                            SET approval_2_user_id = COALESCE(approval_2_user_id, $2),
+                                approval_2_at = NOW(),
+                                approval_2_status = 'APPROVED',
+                                approval_2_remark = $3,
+                                approval_3_user_id = $4,
+                                approval_3_status = $5,
+                                updated_at = NOW()
+                            WHERE id = $1
+                                AND approval_1_status = 'APPROVED'
+                                AND COALESCE(approval_2_status, 'WAITING') = 'WAITING'
+                                AND (approval_3_status IS NULL OR approval_3_status = 'WAITING')
+                            RETURNING
+                                id AS request_id,
+                                created_by AS requester_user_id,
+                                approval_1_user_id,
+                                approval_1_status,
+                                approval_1_at,
+                                approval_1_remark,
+                                approval_2_user_id,
+                                approval_2_status,
+                                approval_2_at,
+                                approval_2_remark,
+                                approval_3_user_id,
+                                approval_3_status,
+                                approval_3_at,
+                                approval_3_remark`,
+                            [
+                                requestId,
+                                actorUserId,
+                                safeRemark,
+                                autoAssignedApproval3.approval_3_user_id,
+                                autoAssignedApproval3.approval_3_status,
+                            ]
                         );
+
+                        if (approvalResult.rowCount !== 1) {
+                            throw buildSingleRequestApprovalError(
+                                "Single request is already processed or not waiting for admin approval",
+                                409,
+                                "SINGLE_REQUEST_APPROVAL_CONFLICT"
+                            );
+                        }
+
+                        await syncSingleRequestApprovalSnapshot(
+                            client,
+                            requestId,
+                            approvalResult.rows[0],
+                            autoAssignedApproval3.assigned_to
+                        );
+                        await client.query("COMMIT");
+
+                        return {
+                            request_id: approvalResult.rows[0].request_id,
+                            stage: "Approval 2",
+                            next_stage: autoAssignedApproval3.next_stage,
+                            approval_3_user_id:
+                                approvalResult.rows[0].approval_3_user_id,
+                            approval_3_status:
+                                approvalResult.rows[0].approval_3_status,
+                        };
                     }
 
-                    const autoAssignedApproval3 = buildAutoAssignedApproval3({
-                        approval3UserId: mdmUser.user_id,
+                    const nextSnapshot = {
+                        ...snapshot,
+                        ...editablePatch,
+                        change_extend_reason:
+                            editablePatch.change_extend_reason ??
+                            currentChangeExtendReason,
+                    };
+                    const materialCode =
+                        resolveSingleRequestMaterialCode(nextSnapshot);
+
+                    if (
+                        normalizedTicketType ===
+                        SINGLE_REQUEST_TICKET_TYPES.CHANGE
+                    ) {
+                        if (!materialCode) {
+                            throw buildSingleRequestApprovalError(
+                                "Material code is required for Change requests",
+                                400,
+                                "SINGLE_REQUEST_CHANGE_MATERIAL_CODE_REQUIRED"
+                            );
+                        }
+
+                        const sapUpdateQuery = `UPDATE mat_sap_data
+                             SET name = $1,
+                                 unit_of_measurement = $2,
+                                 updated_at = NOW(),
+                                 updated_by = $3
+                             WHERE code = $4
+                               AND (dffromclient IS NULL OR dffromclient = false)`;
+
+                        const sapFilteredUpdateResult = await client.query(
+                            sapUpdateQuery,
+                            [
+                                nextSnapshot.material_description ?? null,
+                                nextSnapshot.base_uom ?? null,
+                                actorUserId ?? null,
+                                materialCode,
+                            ]
+                        );
+
+                        if (sapFilteredUpdateResult.rowCount !== 1) {
+                            throw buildSingleRequestApprovalError(
+                                "Change request material code must match exactly one material",
+                                409,
+                                "SINGLE_REQUEST_CHANGE_MATERIAL_CODE_CONFLICT"
+                            );
+                        }
+                    }
+
+                        if (
+                            normalizedTicketType ===
+                            SINGLE_REQUEST_TICKET_TYPES.EXTEND
+                        ) {
+                        if (!materialCode) {
+                            throw buildSingleRequestApprovalError(
+                                "Material code is required for Extend requests",
+                                400,
+                                "SINGLE_REQUEST_EXTEND_MATERIAL_CODE_REQUIRED"
+                            );
+                        }
+
+                        const materialExistsResult = await client.query(
+                            `SELECT 1
+                             FROM mat_sap_data
+                             WHERE code = $1`,
+                            [materialCode]
+                        );
+
+                            if (materialExistsResult.rowCount !== 1) {
+                                throw buildSingleRequestApprovalError(
+                                    "Extend request material code was not found",
+                                    404,
+                                    "SINGLE_REQUEST_EXTEND_MATERIAL_CODE_NOT_FOUND"
+                                );
+                            }
+
+                            const selectedPlantCode = String(
+                                nextSnapshot.plant_code || ""
+                            ).trim();
+                            const selectedStorageLocation = String(
+                                nextSnapshot.sloc_code || ""
+                            ).trim();
+
+                            if (!selectedPlantCode || !selectedStorageLocation) {
+                                throw buildSingleRequestApprovalError(
+                                    "Plant and storage location are required",
+                                    400,
+                                    "SINGLE_REQUEST_EXTEND_LOCATION_REQUIRED"
+                                );
+                            }
+
+                            const locations = await Material.getLocationAndPlant();
+                            const hasMatchingLocation = locations.some(
+                                location =>
+                                    String(location.plant_code || "").trim() ===
+                                        selectedPlantCode &&
+                                    String(
+                                        location.storage_location || ""
+                                    ).trim() === selectedStorageLocation
+                            );
+
+                            if (!hasMatchingLocation) {
+                                throw buildSingleRequestApprovalError(
+                                    "Selected plant and storage location were not found",
+                                    400,
+                                    "SINGLE_REQUEST_EXTEND_LOCATION_NOT_FOUND"
+                                );
+                            }
+
+                            const sapExtendUpdateResult = await client.query(
+                                `UPDATE mat_sap_data
+                                 SET plant_code = $1,
+                                     sloc_code = $2,
+                                     updated_at = NOW(),
+                                     updated_by = $3
+                                 WHERE code = $4
+                                   AND (dffromclient IS NULL OR dffromclient = false)`,
+                                [
+                                    selectedPlantCode,
+                                    selectedStorageLocation,
+                                    actorUserId ?? null,
+                                    materialCode,
+                                ]
+                            );
+
+                            if (sapExtendUpdateResult.rowCount !== 1) {
+                                throw buildSingleRequestApprovalError(
+                                    "Extend request material code must match exactly one material",
+                                    409,
+                                    "SINGLE_REQUEST_EXTEND_MATERIAL_CODE_CONFLICT"
+                                );
+                            }
+                        }
+
+                    const patch = buildSingleRequestFinalApprovalPatch({
+                        stage: activeStage,
+                        actorUserId,
+                        remark: safeRemark,
                     });
 
-                    const approvalResult = await client.query(
-                        `UPDATE mat_single_request
-                        SET approval_2_user_id = $2,
-                            approval_2_at = NOW(),
-                            approval_2_status = 'APPROVED',
-                            approval_2_remark = $3,
-                            approval_3_user_id = $4,
-                            approval_3_status = $5,
-                            updated_at = NOW()
-                        WHERE id = $1
-                            AND approval_1_status = 'APPROVED'
-                            AND COALESCE(approval_2_status, 'WAITING') = 'WAITING'
-                            AND (approval_3_status IS NULL OR approval_3_status = 'WAITING')
-                        RETURNING
-                            id AS request_id,
-                            created_by AS requester_user_id,
-                            approval_1_user_id,
-                            approval_1_status,
-                            approval_1_at,
-                            approval_1_remark,
-                            approval_2_user_id,
-                            approval_2_status,
-                            approval_2_at,
-                            approval_2_remark,
-                            approval_3_user_id,
-                            approval_3_status,
-                            approval_3_at,
-                            approval_3_remark`,
-                        [
-                            requestId,
-                            actorUserId,
-                            safeRemark,
-                            autoAssignedApproval3.approval_3_user_id,
-                            autoAssignedApproval3.approval_3_status,
-                        ]
-                    );
-
-                    if (approvalResult.rowCount !== 1) {
-                        throw buildSingleRequestApprovalError(
-                            "Single request is already processed or not waiting for admin approval",
-                            409,
-                            "SINGLE_REQUEST_APPROVAL_CONFLICT"
-                        );
+                    const fieldPrefix = getApprovalStageFieldPrefix(activeStage);
+                    if (snapshot[`${fieldPrefix}_user_id`] != null) {
+                        delete patch[`${fieldPrefix}_user_id`];
                     }
 
-                    await syncSingleRequestApprovalSnapshot(
-                        client,
-                        requestId,
-                        approvalResult.rows[0],
-                        autoAssignedApproval3.assigned_to
-                    );
+                    await updateSingleRequestColumns(client, requestId, patch);
                     await client.query("COMMIT");
 
                     return {
-                        request_id: approvalResult.rows[0].request_id,
-                        stage: "Approval 2",
-                        next_stage: autoAssignedApproval3.next_stage,
-                        approval_3_user_id:
-                            approvalResult.rows[0].approval_3_user_id,
-                        approval_3_status:
-                            approvalResult.rows[0].approval_3_status,
+                        request_id: Number(requestId),
+                        stage: "Approval 3",
+                        status: "Done",
+                        assigned_to: "Completed",
                     };
                 } catch (error) {
                     await client.query("ROLLBACK");
@@ -4455,6 +5053,9 @@ const Material = {
     },
 
     createSingleRequest: async ({
+        ticketType,
+        materialCode = null,
+        changeExtendReason = null,
         materialGroupId,
         materialSubGroupId,
         requestFields = {},
@@ -4476,21 +5077,47 @@ const Material = {
                         "SELECT nextval(pg_get_serial_sequence('mat_single_request', 'id')) AS next_id"
                     );
 
+                    const normalizedPersistedRequestFields =
+                        normalizeSingleRequestRequestFields(requestFields);
+                    const storedMaterialCode = String(
+                        materialCode ??
+                            normalizedPersistedRequestFields.material_number ??
+                            normalizedPersistedRequestFields.material_code ??
+                            ""
+                    ).trim() || null;
+
+                    if (
+                        storedMaterialCode &&
+                        !normalizedPersistedRequestFields.material_number
+                    ) {
+                        normalizedPersistedRequestFields.material_number =
+                            storedMaterialCode;
+                    }
+
                     const requestNo = String(1000000000 + Number(nextId));
                     const payload = JSON.stringify({
-                        requestFields,
+                        requestFields: normalizedPersistedRequestFields,
                         templateValues,
                     });
+                    const normalizedTicketType =
+                        normalizeSingleRequestTicketType(ticketType);
                     const requesterMasterResult = await client.query(
                         `SELECT approval_1_user_id, approval_2_user_id
                          FROM mat_single_request_approval
                          WHERE requester_user_id = $1`,
                         [createdBy]
                     );
+                    const approval3User =
+                        normalizedTicketType ===
+                        SINGLE_REQUEST_TICKET_TYPES.EXTEND
+                            ? await getRandomMdmMaterialUser(client)
+                            : null;
                     const snapshot = buildSingleRequestApprovalSnapshot({
+                        ticketType: normalizedTicketType,
                         requesterUserId: createdBy,
                         requesterUsername: createdByUsername,
                         approvalMaster: requesterMasterResult.rows[0] || null,
+                        approval3UserId: approval3User?.user_id || null,
                     });
 
                     const insertResult = await client.query(
@@ -4498,6 +5125,7 @@ const Material = {
                             id,
                             request_no,
                             ticket_type,
+                            change_extend_reason,
                             material_group_id,
                             material_sub_group_id,
                             plant_code,
@@ -4520,23 +5148,29 @@ const Material = {
                             approval_3_user_id,
                             approval_3_status
                         ) VALUES (
-                            $1, $2, 'Create', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Submit', 'Approval 1', $13, NOW(), NOW(), $14, $15, $16, $17, $18, $19
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'Submit', $15, $16, NOW(), NOW(), $17, $18, $19, $20, $21, $22
                         )
-                        RETURNING id, request_no, ticket_type, material_description, base_uom, status, assigned_to, created_by, created_at`,
+                        RETURNING id, request_no, ticket_type, change_extend_reason, material_description, base_uom, status, assigned_to, created_by, created_at`,
                         [
                             nextId,
                             requestNo,
+                            normalizedTicketType,
+                            String(changeExtendReason || "").trim() || null,
                             materialGroupId,
                             materialSubGroupId || null,
-                            requestFields.plant || null,
-                            requestFields.storage_location || null,
-                            requestFields.material_description,
-                            requestFields.base_unit_of_measure ||
-                                requestFields.base_uom,
-                            requestFields.long_text_1 || null,
-                            requestFields.long_text_2 || null,
-                            requestFields.long_text_3 || null,
+                            normalizedPersistedRequestFields.plant || null,
+                            normalizedPersistedRequestFields.storage_location ||
+                                null,
+                            normalizedPersistedRequestFields.material_description,
+                            normalizedPersistedRequestFields.base_unit_of_measure ||
+                                normalizedPersistedRequestFields.base_uom,
+                            normalizedPersistedRequestFields.long_text_1 || null,
+                            normalizedPersistedRequestFields.long_text_2 || null,
+                            normalizedPersistedRequestFields.long_text_3 || null,
                             payload,
+                            resolveCreateSingleRequestAssignedTo(
+                                normalizedTicketType
+                            ),
                             createdBy,
                             snapshot.approval_1_user_id,
                             snapshot.approval_1_status,
@@ -4590,6 +5224,7 @@ const Material = {
 
                     return {
                         ...insertResult.rows[0],
+                        material_code: storedMaterialCode,
                         attachments: attachments.map(file => ({
                             file_name: file.originalName,
                             file_path: file.relativePath,
@@ -4610,6 +5245,32 @@ const Material = {
             }
 
             console.error("Error creating single material request:", error);
+            throw error;
+        }
+    },
+
+    hasActiveSingleRequest: async ({ materialCode, ticketType }) => {
+        const normalizedTicketType = normalizeSingleRequestTicketType(ticketType);
+
+        if (normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.CREATE) {
+            return false;
+        }
+
+        try {
+            return await DBClientWrapper(async client => {
+                const result = await client.query(
+                    `SELECT 1
+                     FROM mat_single_request r
+                     WHERE r.ticket_type = $1
+                       AND ${SINGLE_REQUEST_MATERIAL_CODE_SQL} = $2
+                       AND r.assigned_to NOT IN ('Completed', 'Cancelled')
+                     LIMIT 1`,
+                    [normalizedTicketType, materialCode]
+                );
+                return result.rows.length > 0;
+            });
+        } catch (error) {
+            console.error("Error checking active single request:", error);
             throw error;
         }
     },
@@ -4743,6 +5404,11 @@ const Material = {
                         reason,
                     });
 
+                    const fieldPrefix = getApprovalStageFieldPrefix(activeStage);
+                    if (snapshot[`${fieldPrefix}_user_id`] == null) {
+                        patch[`${fieldPrefix}_user_id`] = actorUserId;
+                    }
+
                     await updateSingleRequestColumns(client, requestId, patch);
                     await client.query("COMMIT");
 
@@ -4816,6 +5482,11 @@ const Material = {
                         reason,
                     });
 
+                    const fieldPrefix = getApprovalStageFieldPrefix(activeStage);
+                    if (snapshot[`${fieldPrefix}_user_id`] == null) {
+                        patch[`${fieldPrefix}_user_id`] = actorUserId;
+                    }
+
                     await updateSingleRequestColumns(client, requestId, patch);
                     await client.query("COMMIT");
 
@@ -4844,6 +5515,8 @@ const Material = {
     }) => {
         const savedFiles = [];
         const removedFilePaths = [];
+        const normalizedEditedRequest =
+            normalizeSingleRequestEditedRequest(editedRequest);
 
         try {
             return await DBClientWrapper(async client => {
@@ -4889,7 +5562,7 @@ const Material = {
                     const editablePatch =
                         await prepareSingleRequestApprovalEditPatch({
                             snapshot,
-                            editedRequest,
+                            editedRequest: normalizedEditedRequest,
                             allowMaterialGroupChange: true,
                             getSubGroupById: Material.getSubGroupById,
                             validateMaterialRequestTemplate:
@@ -4905,6 +5578,62 @@ const Material = {
                             !Array.isArray(attachments)
                           ? attachments
                           : null;
+                    const ticketType = normalizeSingleRequestTicketType(
+                        snapshot.ticket_type
+                    );
+
+                    if (
+                        ticketType !== SINGLE_REQUEST_TICKET_TYPES.CREATE &&
+                        attachmentInstructions
+                    ) {
+                        const keepAttachmentIds = Array.isArray(
+                            attachmentInstructions.keepAttachmentIds
+                        )
+                            ? attachmentInstructions.keepAttachmentIds
+                            : [];
+                        const newAttachments = Array.isArray(
+                            attachmentInstructions.newAttachments
+                        )
+                            ? attachmentInstructions.newAttachments
+                            : [];
+
+                        if (
+                            keepAttachmentIds.length > 0 ||
+                            newAttachments.length > 0
+                        ) {
+                            throw buildSingleRequestApprovalError(
+                                `${ticketType} requests do not support attachments`,
+                                400,
+                                "SINGLE_REQUEST_ATTACHMENT_UNSUPPORTED"
+                            );
+                        }
+                    }
+
+                    if (ticketType === SINGLE_REQUEST_TICKET_TYPES.EXTEND) {
+                        const nextPlantCode = String(
+                            editablePatch.plant_code ??
+                                snapshot.plant_code ??
+                                ""
+                        ).trim();
+                        const nextSlocCode = String(
+                            editablePatch.sloc_code ??
+                                snapshot.sloc_code ??
+                                ""
+                        ).trim();
+                        const nextReason = String(
+                            editablePatch.change_extend_reason ??
+                                snapshot.change_extend_reason ??
+                                ""
+                        ).trim();
+
+                        if (!nextPlantCode || !nextSlocCode || !nextReason) {
+                            throw buildSingleRequestApprovalError(
+                                "Plant, storage location, and change or extend reason are required",
+                                400,
+                                "SINGLE_REQUEST_EXTEND_REWORK_REQUIRED_FIELDS_MISSING"
+                            );
+                        }
+                    }
 
                     await updateSingleRequestColumns(client, requestId, {
                         ...editablePatch,
@@ -5228,6 +5957,7 @@ Material.__private = {
                             id,
                             request_no,
                             ticket_type,
+                            change_extend_reason,
                             material_group_id,
                             material_sub_group_id,
                             plant_code,

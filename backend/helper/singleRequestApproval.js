@@ -4,7 +4,26 @@ const ADMIN_APPROVER_USERNAME = "ADMIN";
 const COMPLETED_SINGLE_REQUEST_ASSIGNMENT = "Completed";
 const SQL_NOW_EXPRESSION = Object.freeze({ __sql: "NOW()" });
 
+const SINGLE_REQUEST_TICKET_TYPES = Object.freeze({
+    CREATE: "Create",
+    CHANGE: "Change",
+    EXTEND: "Extend",
+});
+
 const normalizeUsername = value => String(value || "").trim().toUpperCase();
+const normalizeSingleRequestTicketType = value => {
+    const normalized = normalizeUsername(value);
+
+    if (normalized === "CHANGE") {
+        return SINGLE_REQUEST_TICKET_TYPES.CHANGE;
+    }
+
+    if (normalized === "EXTEND") {
+        return SINGLE_REQUEST_TICKET_TYPES.EXTEND;
+    }
+
+    return SINGLE_REQUEST_TICKET_TYPES.CREATE;
+};
 const normalizeApprovalStatus = value => {
     const normalized = normalizeUsername(value);
 
@@ -143,9 +162,31 @@ const getApprovalStageFieldPrefix = stage => {
 };
 
 const resolveSingleRequestApprovalStage = (approval = {}) => {
+    const ticketType = normalizeSingleRequestTicketType(
+        approval.ticket_type || approval.ticketType
+    );
     const approval1Status = normalizeApprovalStatus(approval.approval_1_status);
     const approval2Status = normalizeApprovalStatus(approval.approval_2_status);
     const approval3Status = normalizeApprovalStatus(approval.approval_3_status);
+
+    if (ticketType === SINGLE_REQUEST_TICKET_TYPES.EXTEND) {
+        return approval3Status === INITIAL_APPROVAL_STATUS ? "Approval 3" : null;
+    }
+
+    if (ticketType === SINGLE_REQUEST_TICKET_TYPES.CHANGE) {
+        if (approval1Status === INITIAL_APPROVAL_STATUS) {
+            return "Approval 1";
+        }
+
+        if (
+            approval1Status === "APPROVED" &&
+            approval3Status === INITIAL_APPROVAL_STATUS
+        ) {
+            return "Approval 3";
+        }
+
+        return null;
+    }
 
     if (approval1Status === INITIAL_APPROVAL_STATUS) {
         return "Approval 1";
@@ -383,34 +424,75 @@ const buildRequesterApprovalMaster = ({
 };
 
 const buildSingleRequestApprovalSnapshot = ({
+    ticketType,
     requesterUserId,
     requesterUsername,
     approvalMaster,
-} = {}) => ({
-    requester_user_id: requesterUserId,
-    approval_1_user_id: normalizeAssigneeValue(
-        approvalMaster?.approval_1_user_id
-    ) ??
-        (isAdminMaterialApprover(requesterUsername)
-            ? normalizeAssigneeValue(requesterUserId)
-            : null),
-    approval_1_status: INITIAL_APPROVAL_STATUS,
-    approval_1_at: null,
-    approval_1_remark: null,
-    approval_2_user_id: normalizeAssigneeValue(
-        approvalMaster?.approval_2_user_id
-    ) ??
-        (isAdminMaterialApprover(requesterUsername)
-            ? normalizeAssigneeValue(requesterUserId)
-            : null),
-    approval_2_status: null,
-    approval_2_at: null,
-    approval_2_remark: null,
-    approval_3_user_id: null,
-    approval_3_status: null,
-    approval_3_at: null,
-    approval_3_remark: null,
-});
+    approval3UserId = null,
+} = {}) => {
+    const normalizedTicketType = normalizeSingleRequestTicketType(ticketType);
+    const adminFallbackUserId = isAdminMaterialApprover(requesterUsername)
+        ? normalizeAssigneeValue(requesterUserId)
+        : null;
+    const approval1UserId =
+        normalizeAssigneeValue(approvalMaster?.approval_1_user_id) ??
+        adminFallbackUserId;
+    const approval2UserId =
+        normalizeAssigneeValue(approvalMaster?.approval_2_user_id) ??
+        adminFallbackUserId;
+
+    if (normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.EXTEND) {
+        return {
+            requester_user_id: requesterUserId,
+            approval_1_user_id: null,
+            approval_1_status: "APPROVED",
+            approval_1_at: null,
+            approval_1_remark: null,
+            approval_2_user_id: null,
+            approval_2_status: "APPROVED",
+            approval_2_at: null,
+            approval_2_remark: null,
+            approval_3_user_id: normalizeAssigneeValue(approval3UserId),
+            approval_3_status: INITIAL_APPROVAL_STATUS,
+            approval_3_at: null,
+            approval_3_remark: null,
+        };
+    }
+
+    if (normalizedTicketType === SINGLE_REQUEST_TICKET_TYPES.CHANGE) {
+        return {
+            requester_user_id: requesterUserId,
+            approval_1_user_id: approval1UserId,
+            approval_1_status: INITIAL_APPROVAL_STATUS,
+            approval_1_at: null,
+            approval_1_remark: null,
+            approval_2_user_id: null,
+            approval_2_status: "APPROVED",
+            approval_2_at: null,
+            approval_2_remark: null,
+            approval_3_user_id: normalizeAssigneeValue(approval3UserId),
+            approval_3_status: INITIAL_APPROVAL_STATUS,
+            approval_3_at: null,
+            approval_3_remark: null,
+        };
+    }
+
+    return {
+        requester_user_id: requesterUserId,
+        approval_1_user_id: approval1UserId,
+        approval_1_status: INITIAL_APPROVAL_STATUS,
+        approval_1_at: null,
+        approval_1_remark: null,
+        approval_2_user_id: approval2UserId,
+        approval_2_status: null,
+        approval_2_at: null,
+        approval_2_remark: null,
+        approval_3_user_id: normalizeAssigneeValue(approval3UserId),
+        approval_3_status: null,
+        approval_3_at: null,
+        approval_3_remark: null,
+    };
+};
 
 const buildAutoAssignedApproval3 = ({ approval3UserId }) => {
     if (!approval3UserId) {
@@ -524,6 +606,7 @@ module.exports = {
     COMPLETED_SINGLE_REQUEST_ASSIGNMENT,
     INITIAL_APPROVAL_STATUS,
     MDM_MATERIAL_GROUP_NAME,
+    SINGLE_REQUEST_TICKET_TYPES,
     assertRequiredActionReason,
     buildAdministratorAssignmentDecision,
     buildAutoAssignedApproval3,
@@ -543,6 +626,7 @@ module.exports = {
     isRequestStatusVisibleInApprovalList,
     isSingleRequestApprovalInboxEligible,
     normalizeApprovalStatus,
+    normalizeSingleRequestTicketType,
     normalizeUsername,
     resolveSingleRequestHeaderAssignment,
     resolveSingleRequestApprovalStage,

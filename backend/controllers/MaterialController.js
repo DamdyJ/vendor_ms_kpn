@@ -6,6 +6,7 @@ const path = require("path");
 const getMimeType = require("../helper/mimetype");
 const {
     isAdminMaterialApprover,
+    normalizeSingleRequestTicketType,
 } = require("../helper/singleRequestApproval");
 
 const MATERIAL_FILE_DIRECTORIES = [
@@ -106,6 +107,22 @@ const REQUEST_FIELD_ALIASES = {
     longText3: "long_text_3",
 };
 
+const SINGLE_REQUEST_EDITED_REQUEST_ALIASES = {
+    ticketType: "ticket_type",
+    materialCode: "material_code",
+    changeExtendReason: "change_extend_reason",
+    materialGroupId: "material_group_id",
+    materialSubGroupId: "material_sub_group_id",
+    plantCode: "plant_code",
+    slocCode: "sloc_code",
+    materialDescription: "material_description",
+    baseUom: "base_uom",
+    templatePayload: "template_payload",
+    longText1: "long_text_1",
+    longText2: "long_text_2",
+    longText3: "long_text_3",
+};
+
 const SINGLE_REQUEST_LONG_TEXT_FIELD_KEYS = [
     "long_text_1",
     "long_text_2",
@@ -118,6 +135,18 @@ const SINGLE_REQUEST_NON_FORM_FIELD_KEYS = new Set([
     "distribution_channel",
     "valuation_class",
     "valuation_class_project_stock",
+]);
+
+const SINGLE_REQUEST_CHANGE_REQUEST_FIELD_KEYS = new Set([
+    "material_number",
+    "material_type",
+    "material_group",
+    "material_description",
+    "base_uom",
+    "base_unit_of_measure",
+    "long_text_1",
+    "long_text_2",
+    "long_text_3",
 ]);
 
 const normalizeRequestFields = payload => {
@@ -165,6 +194,116 @@ const buildNormalizedSingleRequestFields = ({
             requestFields[fieldKey] !== null
         ) {
             normalized[fieldKey] = requestFields[fieldKey];
+        }
+    }
+
+    return normalized;
+};
+
+const hydrateSingleRequestSapRequestFields = ({
+    ticketType,
+    requestFields = {},
+    sapMaterial = null,
+    materialGroup = null,
+    materialCode = null,
+}) => {
+    const normalized = {
+        ...requestFields,
+    };
+
+    if (!sapMaterial || ticketType === "Create") {
+        return normalized;
+    }
+
+    normalized.material_number =
+        normalized.material_number ??
+        (String(materialCode || sapMaterial.code || "").trim() || null);
+    normalized.material_type =
+        normalized.material_type ??
+        (String(sapMaterial.type || "").trim() || null);
+    normalized.material_group =
+        normalized.material_group ??
+        (String(materialGroup?.code || sapMaterial.groupCode || "").trim() ||
+            null);
+    normalized.base_unit_of_measure =
+        normalized.base_unit_of_measure ??
+        normalized.base_uom ??
+        (String(sapMaterial.unit_of_measurement || "").trim() || null);
+
+    return normalized;
+};
+
+const isSingleRequestCreateValidationErrorVisible = ({
+    error = {},
+    validation = {},
+    ticketType,
+    templateValues = {},
+}) => {
+    const fieldKey = error.fieldKey ?? error.field_key;
+
+    if (!fieldKey || SINGLE_REQUEST_NON_FORM_FIELD_KEYS.has(fieldKey)) {
+        return false;
+    }
+
+    if (ticketType !== "Change") {
+        return true;
+    }
+
+    const isRequestRuleError = (validation.requestFieldRules || []).some(
+        rule => (rule?.fieldKey ?? rule?.field_key) === fieldKey
+    );
+
+    if (
+        isRequestRuleError &&
+        !SINGLE_REQUEST_CHANGE_REQUEST_FIELD_KEYS.has(fieldKey)
+    ) {
+        return false;
+    }
+
+    const matchingTemplateField = Array.isArray(validation.template?.fields)
+        ? validation.template.fields.find(
+              field => (field?.fieldKey ?? field?.field_key) === fieldKey
+          )
+        : null;
+    const templateValue = templateValues[fieldKey];
+    const hasTemplateValue =
+        templateValue !== undefined &&
+        templateValue !== null &&
+        !(
+            typeof templateValue === "string" &&
+            templateValue.trim() === ""
+        );
+    const isMissingTemplateValueError =
+        Boolean(matchingTemplateField?.isMandatory) &&
+        !hasTemplateValue &&
+        /wajib diisi/i.test(String(error.message || ""));
+
+    if (isMissingTemplateValueError) {
+        return false;
+    }
+
+    return true;
+};
+
+const normalizeSingleRequestEditedRequest = payload => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return payload;
+    }
+
+    const normalized = { ...payload };
+
+    for (const [legacyKey, canonicalKey] of Object.entries(
+        SINGLE_REQUEST_EDITED_REQUEST_ALIASES
+    )) {
+        if (
+            normalized[canonicalKey] === undefined &&
+            normalized[legacyKey] !== undefined
+        ) {
+            normalized[canonicalKey] = normalized[legacyKey];
+        }
+
+        if (legacyKey !== canonicalKey) {
+            delete normalized[legacyKey];
         }
     }
 
@@ -1504,30 +1643,108 @@ const MaterialController = {
         }
     },
 
+    checkActiveSingleRequest: async (req, res) => {
+        try {
+            const materialCode = String(req.query?.materialCode ?? "").trim();
+            const ticketType = String(req.query?.ticketType ?? "").trim();
+
+            if (!materialCode) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Material code is required",
+                });
+            }
+
+            if (!ticketType || (ticketType !== "Change" && ticketType !== "Extend")) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Ticket type must be Change or Extend",
+                });
+            }
+
+            const hasActive = await Material.hasActiveSingleRequest({
+                materialCode,
+                ticketType,
+            });
+
+            return res.status(200).json({
+                success: true,
+                data: { materialCode, ticketType, hasActive },
+            });
+        } catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to check active request status",
+            });
+        }
+    },
+
     createSingleRequest: async (req, res) => {
         let tempFilePaths = [];
 
         try {
             const userId = req.cookies.user_id;
-            const form = new formidable.IncomingForm();
-            form.options.multiples = true;
-            form.options.maxFileSize = 5 * 1024 * 1024;
-
-            const [fields, items] = await form.parse(req);
-            const materialGroupCode = String(
-                toFieldValue(fields.materialGroupCode) || ""
-            ).trim();
-            const subgroupValue = toFieldValue(fields.subgroup);
-            const materialSubGroupId = Number.parseInt(subgroupValue, 10);
-            const requestFields = normalizeRequestFields(
-                parseJsonField(fields.requestFields)
+            const isMultipartRequest = String(
+                req.headers?.["content-type"] || ""
+            ).includes("multipart/form-data");
+            let materialGroupCode = "";
+            let materialGroupId = Number.parseInt(
+                req.body?.materialGroupId ?? req.body?.material_group_id,
+                10
             );
-            const templateValues = parseJsonField(fields.templateValues);
-            const rawFiles = items.files || items.file || [];
-            const files = (
-                Array.isArray(rawFiles) ? rawFiles : [rawFiles]
-            ).filter(Boolean);
-            tempFilePaths = files.map(file => file.filepath).filter(Boolean);
+            let ticketType = normalizeSingleRequestTicketType(
+                req.body?.ticketType ?? req.body?.ticket_type
+            );
+            let materialCode = String(
+                req.body?.materialCode ??
+                    req.body?.material_code ??
+                    ""
+            ).trim();
+            let changeExtendReason = String(
+                req.body?.changeExtendReason ??
+                    req.body?.change_extend_reason ??
+                    ""
+            ).trim();
+            let materialSubGroupId = Number.parseInt(
+                req.body?.materialSubGroupId ??
+                    req.body?.material_sub_group_id,
+                10
+            );
+            let requestFields = normalizeRequestFields(req.body?.requestFields);
+            let templateValues = parseJsonField(req.body?.templateValues);
+            let files = [];
+            let sapMaterial = null;
+
+            if (isMultipartRequest) {
+                const form = new formidable.IncomingForm();
+                form.options.multiples = true;
+                form.options.maxFileSize = 5 * 1024 * 1024;
+
+                const [fields, items] = await form.parse(req);
+                materialGroupCode = String(
+                    toFieldValue(fields.materialGroupCode) || ""
+                ).trim();
+                ticketType = normalizeSingleRequestTicketType(
+                    toFieldValue(fields.ticketType)
+                );
+                materialCode = String(
+                    toFieldValue(fields.materialCode) || ""
+                ).trim();
+                changeExtendReason = String(
+                    toFieldValue(fields.changeExtendReason) || ""
+                ).trim();
+                const subgroupValue = toFieldValue(fields.subgroup);
+                materialSubGroupId = Number.parseInt(subgroupValue, 10);
+                requestFields = normalizeRequestFields(
+                    parseJsonField(fields.requestFields)
+                );
+                templateValues = parseJsonField(fields.templateValues);
+                const rawFiles = items.files || items.file || [];
+                files = (
+                    Array.isArray(rawFiles) ? rawFiles : [rawFiles]
+                ).filter(Boolean);
+                tempFilePaths = files.map(file => file.filepath).filter(Boolean);
+            }
 
             if (!userId) {
                 return res.status(401).json({
@@ -1536,7 +1753,45 @@ const MaterialController = {
                 });
             }
 
-            if (!materialGroupCode) {
+            if (
+                ticketType !== "Create" &&
+                !materialCode
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Material code is required",
+                });
+            }
+
+            if (!isMultipartRequest && ticketType !== "Create") {
+                sapMaterial = await Material.getMaterialByCode(materialCode);
+
+                if (!sapMaterial) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Material code not found in SAP master data",
+                    });
+                }
+
+                materialGroupId = Number.parseInt(sapMaterial.groupId, 10);
+                materialSubGroupId = Number.parseInt(sapMaterial.subGroupId, 10);
+                materialGroupCode = String(sapMaterial.groupCode || "").trim();
+            }
+
+            if (
+                isMultipartRequest &&
+                !materialGroupCode
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Material group is required",
+                });
+            }
+
+            if (
+                !isMultipartRequest &&
+                !Number.isInteger(materialGroupId)
+            ) {
                 return res.status(400).json({
                     success: false,
                     message: "Material group is required",
@@ -1550,10 +1805,23 @@ const MaterialController = {
                 });
             }
 
-            if (files.length === 0) {
+            if (
+                ticketType === "Create" &&
+                files.length === 0
+            ) {
                 return res.status(400).json({
                     success: false,
                     message: "Minimum 1 attachment is required",
+                });
+            }
+
+            if (
+                ticketType !== "Create" &&
+                files.length > 0
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: `${ticketType} requests do not support attachments`,
                 });
             }
 
@@ -1564,7 +1832,9 @@ const MaterialController = {
                 });
             }
 
-            const materialGroup = await Material.getMaterialGroupByCode(materialGroupCode);
+            const materialGroup = isMultipartRequest
+                ? await Material.getMaterialGroupByCode(materialGroupCode)
+                : await Material.getGroupById(materialGroupId);
             if (!materialGroup) {
                 return res.status(404).json({
                     success: false,
@@ -1627,15 +1897,36 @@ const MaterialController = {
                 };
             });
 
-            const validation =
-                await MaterialTemplate.validateMaterialRequestTemplate({
-                    materialGroupCode,
+            const hydratedRequestFields =
+                hydrateSingleRequestSapRequestFields({
+                    ticketType,
                     requestFields,
-                    templateValues,
+                    sapMaterial,
+                    materialGroup,
+                    materialCode,
                 });
+            const validation =
+                ticketType === "Extend"
+                    ? {
+                          errors: [],
+                          normalizedRequestFields: hydratedRequestFields,
+                          normalizedTemplateValues: templateValues,
+                          requestFieldRules: [],
+                      }
+                    : await MaterialTemplate.validateMaterialRequestTemplate({
+                          materialGroupCode,
+                          requestFields: hydratedRequestFields,
+                          templateValues,
+                      });
 
             const validationErrors = (validation.errors || []).filter(
-                error => !SINGLE_REQUEST_NON_FORM_FIELD_KEYS.has(error.fieldKey)
+                error =>
+                    isSingleRequestCreateValidationErrorVisible({
+                        error,
+                        validation,
+                        ticketType,
+                        templateValues,
+                    })
             );
 
             if (validationErrors.length > 0) {
@@ -1652,8 +1943,9 @@ const MaterialController = {
             });
 
             if (
-                !normalizedRequestFields.material_description ||
-                !normalizedRequestFields.base_unit_of_measure
+                ticketType !== "Extend" &&
+                (!normalizedRequestFields.material_description ||
+                    !normalizedRequestFields.base_unit_of_measure)
             ) {
                 return res.status(400).json({
                     success: false,
@@ -1661,7 +1953,45 @@ const MaterialController = {
                 });
             }
 
+            if (
+                ticketType === "Extend" &&
+                (!normalizedRequestFields.plant ||
+                    !normalizedRequestFields.storage_location)
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Plant and storage location are required",
+                });
+            }
+
+            if (
+                ticketType !== "Create" &&
+                !changeExtendReason
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Change or extend reason is required",
+                });
+            }
+
+            if (ticketType !== "Create") {
+                const hasActive = await Material.hasActiveSingleRequest({
+                    materialCode,
+                    ticketType,
+                });
+
+                if (hasActive) {
+                    return res.status(409).json({
+                        success: false,
+                        message: `An active ${ticketType.toLowerCase()} request already exists for material ${materialCode}. Please wait for it to complete before submitting a new one.`,
+                    });
+                }
+            }
+
             const createdRequest = await Material.createSingleRequest({
+                ticketType,
+                materialCode,
+                changeExtendReason,
                 materialGroupId: materialGroup.id,
                 materialSubGroupId,
                 requestFields: normalizedRequestFields,
@@ -1790,7 +2120,9 @@ const MaterialController = {
         let tempFilePaths = [];
 
         try {
-            let editedRequest = req.body?.editedRequest ?? null;
+            let editedRequest = normalizeSingleRequestEditedRequest(
+                req.body?.editedRequest ?? null
+            );
             let attachments = null;
             const isMultipartRequest = String(
                 req.headers?.["content-type"] || ""

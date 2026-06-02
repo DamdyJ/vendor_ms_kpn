@@ -15,6 +15,9 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const fs = require("fs");
 const db = require("./backend/config/connection");
+const {
+    ensureSingleRequestSchema,
+} = require("./backend/config/ensureSingleRequestSchema");
 const VerifyLogin = require("./backend/middleware/VerifyLogin");
 const { SchedulerSyncStaged } = require("./backend/helper/Scheduler");
 const Material = require("./backend/models/MaterialModel");
@@ -146,8 +149,15 @@ cron.schedule(
     }
 );
 
-const server = https
-    .createServer(servOption, app)
-    .listen(port, "0.0.0.0", () => {
+async function startServer() {
+    await ensureSingleRequestSchema(db);
+
+    https.createServer(servOption, app).listen(port, "0.0.0.0", () => {
         console.log(`App running on ${port}`);
     });
+}
+
+startServer().catch(error => {
+    console.error("Failed to ensure single request schema:", error);
+    process.exit(1);
+});

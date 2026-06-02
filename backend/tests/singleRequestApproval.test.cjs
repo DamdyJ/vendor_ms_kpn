@@ -60,6 +60,52 @@ test("buildSingleRequestApprovalSnapshot auto-assigns admin requester when maste
   assert.equal(snapshot.approval_3_user_id, null);
 });
 
+test("buildSingleRequestApprovalSnapshot keeps Create workflow defaults", () => {
+  const snapshot = buildSingleRequestApprovalSnapshot({
+    ticketType: "Create",
+    requesterUserId: "REQ-01",
+    approvalMaster: {
+      approval_1_user_id: "APP-01",
+      approval_2_user_id: "APP-02",
+    },
+  });
+
+  assert.equal(snapshot.approval_1_user_id, "APP-01");
+  assert.equal(snapshot.approval_1_status, "WAITING");
+  assert.equal(snapshot.approval_2_user_id, "APP-02");
+  assert.equal(snapshot.approval_2_status, null);
+  assert.equal(snapshot.approval_3_user_id, null);
+  assert.equal(snapshot.approval_3_status, null);
+});
+
+test("buildSingleRequestApprovalSnapshot starts Change requests at Approval 1 and Approval 3 only", () => {
+  const snapshot = buildSingleRequestApprovalSnapshot({
+    ticketType: "Change",
+    requesterUserId: "REQ-01",
+  });
+
+  assert.equal(snapshot.approval_1_user_id, null);
+  assert.equal(snapshot.approval_1_status, "WAITING");
+  assert.equal(snapshot.approval_2_user_id, null);
+  assert.equal(snapshot.approval_2_status, "APPROVED");
+  assert.equal(snapshot.approval_3_user_id, null);
+  assert.equal(snapshot.approval_3_status, "WAITING");
+});
+
+test("buildSingleRequestApprovalSnapshot starts Extend requests directly at Approval 3", () => {
+  const snapshot = buildSingleRequestApprovalSnapshot({
+    ticketType: "Extend",
+    requesterUserId: "REQ-01",
+  });
+
+  assert.equal(snapshot.approval_1_user_id, null);
+  assert.equal(snapshot.approval_1_status, "APPROVED");
+  assert.equal(snapshot.approval_2_user_id, null);
+  assert.equal(snapshot.approval_2_status, "APPROVED");
+  assert.equal(snapshot.approval_3_user_id, null);
+  assert.equal(snapshot.approval_3_status, "WAITING");
+});
+
 test("assertRequiredActionReason rejects blank reason values", () => {
   assert.throws(
     () => assertRequiredActionReason("   ", "rework"),
@@ -173,6 +219,9 @@ test("canActorApproveSingleRequestStage includes approval 3 assignee", () => {
 test("createSingleRequest query includes approval columns on mat_single_request", () => {
   assert.match(Material.__private.CREATE_SINGLE_REQUEST_INSERT_QUERY, /approval_1_user_id/i);
   assert.match(Material.__private.CREATE_SINGLE_REQUEST_INSERT_QUERY, /approval_2_user_id/i);
+  assert.match(Material.__private.CREATE_SINGLE_REQUEST_INSERT_QUERY, /ticket_type/i);
+  assert.doesNotMatch(Material.__private.CREATE_SINGLE_REQUEST_INSERT_QUERY, /material_code/i);
+  assert.match(Material.__private.CREATE_SINGLE_REQUEST_INSERT_QUERY, /change_extend_reason/i);
 });
 
 test("createSingleRequest query stores material_group_id instead of material_group_code", () => {
@@ -396,6 +445,29 @@ test("approval action workflow syncs mat_single_request snapshot", () => {
     Material.approveSingleRequestByAdmin.toString(),
     /actorUserId \?\? snapshot\.created_by/
   );
+  assert.match(Material.approveSingleRequestByAdmin.toString(), /ticket_type/i);
+  assert.match(
+    Material.approveSingleRequestByAdmin.toString(),
+    /resolveSingleRequestMaterialCode/i
+  );
+  assert.match(
+    Material.approveSingleRequestByAdmin.toString(),
+    /change_extend_reason/i
+  );
+});
+
+test("approval action workflow skips edit history for Change and Extend requests", () => {
+  const source = Material.approveSingleRequestByAdmin.toString();
+  assert.match(source, /ticketType|ticket_type/);
+  assert.match(source, /INSERT INTO mat_single_request_edit_history/i);
+});
+
+test("approval action workflow applies Change updates to mat_sap_data and validates Extend material codes", () => {
+  const source = Material.approveSingleRequestByAdmin.toString();
+  assert.match(source, /UPDATE mat_sap_data/i);
+  assert.match(source, /unit_of_measurement/i);
+  assert.match(source, /resolveSingleRequestMaterialCode/i);
+  assert.match(source, /Done|Completed/);
 });
 
 test("getSingleRequestApprovalInbox query aggregates edit history from history table", () => {
@@ -433,6 +505,18 @@ test("locked approval snapshot query reads runtime approval data from mat_single
   assert.match(
     Material.__private.LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
     /r\.approval_1_status/i
+  );
+  assert.match(
+    Material.__private.LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
+    /r\.ticket_type/i
+  );
+  assert.match(
+    Material.__private.LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
+    /requestFields,material_number/i
+  );
+  assert.match(
+    Material.__private.LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
+    /r\.change_extend_reason/i
   );
 });
 
@@ -478,6 +562,358 @@ test("approve controller forwards editedRequest payload", () => {
     MaterialController.approveSingleRequest.toString(),
     /editedRequest:\s*req\.body\?\.editedRequest\s*\?\?\s*null/
   );
+});
+
+test("createSingleRequest controller forwards ticketType-specific fields", () => {
+  const source = MaterialController.createSingleRequest.toString();
+  assert.match(source, /ticketType/i);
+  assert.match(source, /materialCode/i);
+  assert.match(source, /changeExtendReason/i);
+});
+
+test("createSingleRequest controller accepts JSON Change payloads without multipart attachments", async () => {
+  const originalCreateSingleRequest = Material.createSingleRequest;
+  const originalGetMaterialByCode = Material.getMaterialByCode;
+  const originalGetGroupById = Material.getGroupById;
+  const originalGetSubGroupById = Material.getSubGroupById;
+  const originalValidateMaterialRequestTemplate =
+    MaterialTemplate.validateMaterialRequestTemplate;
+  let receivedPayload = null;
+  let receivedValidationPayload = null;
+
+  Material.getMaterialByCode = async code => ({
+    code,
+    type: "ZROH",
+    unit_of_measurement: "PC",
+    groupCode: "PACK",
+    groupId: 21,
+    subGroupId: 210,
+  });
+  Material.getGroupById = async () => ({
+    id: 21,
+    code: "PACK",
+  });
+  Material.getSubGroupById = async () => ({
+    id: 210,
+    item_group_id: 21,
+    deleted_at: null,
+  });
+  MaterialTemplate.validateMaterialRequestTemplate = async payload => {
+    receivedValidationPayload = payload;
+    return {
+      errors: [
+        {
+          fieldKey: "plant",
+          message: "Plant wajib diisi",
+        },
+        {
+          fieldKey: "sales_organization",
+          message: "Sales Organization wajib diisi",
+        },
+      ],
+      requestFieldRules: [
+        { fieldKey: "material_number" },
+        { fieldKey: "material_type" },
+        { fieldKey: "material_group" },
+        { fieldKey: "plant" },
+        { fieldKey: "sales_organization" },
+      ],
+      materialDescription: payload.requestFields.material_description,
+      normalizedRequestFields: {
+        material_description: payload.requestFields.material_description,
+        base_unit_of_measure: payload.requestFields.base_unit_of_measure,
+      },
+      normalizedTemplateValues: payload.templateValues,
+    };
+  };
+  Material.createSingleRequest = async payload => {
+    receivedPayload = payload;
+    return { request_id: 77, ticket_type: "Change" };
+  };
+
+  const response = {
+    statusCode: null,
+    jsonPayload: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      this.jsonPayload = payload;
+      return this;
+    },
+  };
+
+  try {
+    await MaterialController.createSingleRequest(
+      {
+        cookies: { user_id: "REQ-01", username: "requester.user" },
+        headers: { "content-type": "application/json" },
+        body: {
+          ticketType: "Change",
+          materialCode: "MAT-001",
+          changeExtendReason: "Need updated description",
+          requestFields: {
+            material_description: "New desc",
+            base_uom: "KG",
+          },
+          templateValues: {
+            density: "1.2",
+          },
+        },
+      },
+      response
+    );
+
+    assert.equal(response.statusCode, 201);
+    assert.deepEqual(receivedValidationPayload.requestFields, {
+      material_description: "New desc",
+      base_uom: "KG",
+      material_number: "MAT-001",
+      material_type: "ZROH",
+      material_group: "PACK",
+      base_unit_of_measure: "KG",
+    });
+    assert.equal(receivedPayload.ticketType, "Change");
+    assert.equal(receivedPayload.materialGroupId, 21);
+    assert.equal(receivedPayload.materialSubGroupId, 210);
+    assert.equal(receivedPayload.materialCode, "MAT-001");
+    assert.equal(
+      receivedPayload.changeExtendReason,
+      "Need updated description"
+    );
+    assert.deepEqual(receivedPayload.requestFields, {
+      material_description: "New desc",
+      base_unit_of_measure: "KG",
+      plant: null,
+      storage_location: null,
+    });
+    assert.deepEqual(receivedPayload.templateValues, {
+      density: "1.2",
+    });
+    assert.deepEqual(receivedPayload.attachments, []);
+  } finally {
+    Material.createSingleRequest = originalCreateSingleRequest;
+    Material.getMaterialByCode = originalGetMaterialByCode;
+    Material.getGroupById = originalGetGroupById;
+    Material.getSubGroupById = originalGetSubGroupById;
+    MaterialTemplate.validateMaterialRequestTemplate =
+      originalValidateMaterialRequestTemplate;
+  }
+});
+
+test("createSingleRequest controller allows Change payloads when SAP snapshot has no template values", async () => {
+  const originalCreateSingleRequest = Material.createSingleRequest;
+  const originalGetMaterialByCode = Material.getMaterialByCode;
+  const originalGetGroupById = Material.getGroupById;
+  const originalGetSubGroupById = Material.getSubGroupById;
+  const originalValidateMaterialRequestTemplate =
+    MaterialTemplate.validateMaterialRequestTemplate;
+  let receivedPayload = null;
+
+  Material.getMaterialByCode = async code => ({
+    code,
+    type: "ZROH",
+    unit_of_measurement: "PC",
+    groupCode: "PACK",
+    groupId: 21,
+    subGroupId: 210,
+  });
+  Material.getGroupById = async () => ({
+    id: 21,
+    code: "PACK",
+  });
+  Material.getSubGroupById = async () => ({
+    id: 210,
+    item_group_id: 21,
+    deleted_at: null,
+  });
+  MaterialTemplate.validateMaterialRequestTemplate = async payload => ({
+    errors: [
+      {
+        fieldKey: "brand_merek",
+        message: "BRAND / MEREK wajib diisi",
+      },
+      {
+        fieldKey: "part_number",
+        message: "PART NUMBER wajib diisi",
+      },
+    ],
+    requestFieldRules: [
+      { fieldKey: "material_number" },
+      { fieldKey: "material_type" },
+      { fieldKey: "material_group" },
+      { fieldKey: "material_description" },
+      { fieldKey: "base_unit_of_measure" },
+    ],
+    template: {
+      fields: [
+        { fieldKey: "brand_merek", isMandatory: true },
+        { fieldKey: "part_number", isMandatory: true },
+      ],
+    },
+    materialDescription: payload.requestFields.material_description,
+    normalizedRequestFields: {
+      material_description: payload.requestFields.material_description,
+      base_unit_of_measure: payload.requestFields.base_unit_of_measure,
+    },
+    normalizedTemplateValues: {},
+  });
+  Material.createSingleRequest = async payload => {
+    receivedPayload = payload;
+    return { request_id: 78, ticket_type: "Change" };
+  };
+
+  const response = {
+    statusCode: null,
+    jsonPayload: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      this.jsonPayload = payload;
+      return this;
+    },
+  };
+
+  try {
+    await MaterialController.createSingleRequest(
+      {
+        cookies: { user_id: "REQ-01", username: "requester.user" },
+        headers: { "content-type": "application/json" },
+        body: {
+          ticketType: "Change",
+          materialCode: "MAT-001",
+          changeExtendReason: "Need updated description",
+          requestFields: {
+            material_description: "New desc",
+            base_uom: "KG",
+          },
+          templateValues: {},
+        },
+      },
+      response
+    );
+
+    assert.equal(response.statusCode, 201);
+    assert.equal(receivedPayload.ticketType, "Change");
+    assert.deepEqual(receivedPayload.templateValues, {});
+  } finally {
+    Material.createSingleRequest = originalCreateSingleRequest;
+    Material.getMaterialByCode = originalGetMaterialByCode;
+    Material.getGroupById = originalGetGroupById;
+    Material.getSubGroupById = originalGetSubGroupById;
+    MaterialTemplate.validateMaterialRequestTemplate =
+      originalValidateMaterialRequestTemplate;
+  }
+});
+
+test("createSingleRequest controller keeps Change template format errors when values are provided", async () => {
+  const originalCreateSingleRequest = Material.createSingleRequest;
+  const originalGetMaterialByCode = Material.getMaterialByCode;
+  const originalGetGroupById = Material.getGroupById;
+  const originalGetSubGroupById = Material.getSubGroupById;
+  const originalValidateMaterialRequestTemplate =
+    MaterialTemplate.validateMaterialRequestTemplate;
+  let createCalled = false;
+
+  Material.getMaterialByCode = async code => ({
+    code,
+    type: "ZROH",
+    unit_of_measurement: "PC",
+    groupCode: "PACK",
+    groupId: 21,
+    subGroupId: 210,
+  });
+  Material.getGroupById = async () => ({
+    id: 21,
+    code: "PACK",
+  });
+  Material.getSubGroupById = async () => ({
+    id: 210,
+    item_group_id: 21,
+    deleted_at: null,
+  });
+  MaterialTemplate.validateMaterialRequestTemplate = async payload => ({
+    errors: [
+      {
+        fieldKey: "brand_merek",
+        message: "BRAND / MEREK tidak sesuai rule CAPITAL_ONLY",
+      },
+    ],
+    requestFieldRules: [
+      { fieldKey: "material_number" },
+      { fieldKey: "material_type" },
+      { fieldKey: "material_group" },
+      { fieldKey: "material_description" },
+      { fieldKey: "base_unit_of_measure" },
+    ],
+    template: {
+      fields: [{ fieldKey: "brand_merek", isMandatory: true }],
+    },
+    materialDescription: payload.requestFields.material_description,
+    normalizedRequestFields: {
+      material_description: payload.requestFields.material_description,
+      base_unit_of_measure: payload.requestFields.base_unit_of_measure,
+    },
+    normalizedTemplateValues: payload.templateValues,
+  });
+  Material.createSingleRequest = async () => {
+    createCalled = true;
+    return { request_id: 79, ticket_type: "Change" };
+  };
+
+  const response = {
+    statusCode: null,
+    jsonPayload: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      this.jsonPayload = payload;
+      return this;
+    },
+  };
+
+  try {
+    await MaterialController.createSingleRequest(
+      {
+        cookies: { user_id: "REQ-01", username: "requester.user" },
+        headers: { "content-type": "application/json" },
+        body: {
+          ticketType: "Change",
+          materialCode: "MAT-001",
+          changeExtendReason: "Need updated description",
+          requestFields: {
+            material_description: "New desc",
+            base_uom: "KG",
+          },
+          templateValues: {
+            brand_merek: "bad-value!",
+          },
+        },
+      },
+      response
+    );
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(createCalled, false);
+    assert.deepEqual(response.jsonPayload.errors, [
+      {
+        fieldKey: "brand_merek",
+        message: "BRAND / MEREK tidak sesuai rule CAPITAL_ONLY",
+      },
+    ]);
+  } finally {
+    Material.createSingleRequest = originalCreateSingleRequest;
+    Material.getMaterialByCode = originalGetMaterialByCode;
+    Material.getGroupById = originalGetGroupById;
+    Material.getSubGroupById = originalGetSubGroupById;
+    MaterialTemplate.validateMaterialRequestTemplate =
+      originalValidateMaterialRequestTemplate;
+  }
 });
 
 test("approve controller preserves custom status codes and validation errors", async () => {
@@ -1574,6 +2010,138 @@ test("approveSingleRequestByAdmin stores original request creator metadata in ed
   }
 });
 
+test("approveSingleRequestByAdmin auto-assigns Approval 3 for Change when MDM user is available", async () => {
+  const originalConnect = db.connect;
+  const originalGetSubGroupById = Material.getSubGroupById;
+  const originalValidateMaterialRequestTemplate =
+    MaterialTemplate.validateMaterialRequestTemplate;
+
+  db.connect = async () => ({
+    query: async (queryText, params = []) => {
+      if (queryText === "BEGIN" || queryText === "COMMIT" || queryText === "ROLLBACK") {
+        return { rows: [], rowCount: null };
+      }
+
+      if (/FOR UPDATE OF r/.test(queryText)) {
+        return {
+          rows: [
+            {
+              request_id: 77,
+              request_no: "1000000077",
+              assigned_to: "Approval 1",
+              created_by: "REQ-01",
+              created_at: new Date("2026-05-01T08:00:00.000Z"),
+              status: "Submit",
+              ticket_type: "Change",
+              material_code: "MAT-001",
+              change_extend_reason: "Need update",
+              material_group_code: "CHEM",
+              requester_user_id: "REQ-01",
+              approval_1_user_id: "APP-01",
+              approval_1_at: null,
+              approval_1_status: "WAITING",
+              approval_1_remark: null,
+              approval_2_user_id: null,
+              approval_2_at: null,
+              approval_2_status: "APPROVED",
+              approval_2_remark: null,
+              approval_3_user_id: null,
+              approval_3_at: null,
+              approval_3_status: "WAITING",
+              approval_3_remark: null,
+              material_group_id: 12,
+              material_sub_group_id: 110,
+              plant_code: "P1",
+              sloc_code: "S1",
+              material_description: "Original desc",
+              base_uom: "EA",
+              long_text_1: null,
+              long_text_2: null,
+              long_text_3: null,
+              template_payload: {
+                requestFields: { material_description: "Original desc" },
+                templateValues: {},
+              },
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+
+      if (/FROM mst_user mu[\s\S]*JOIN mst_page_access/i.test(queryText)) {
+        return {
+          rows: [{ user_id: "MDM-01" }],
+          rowCount: 1,
+        };
+      }
+
+      if (/UPDATE mat_single_request\s+SET approval_1_user_id = \$2,[\s\S]*approval_3_user_id = \$4,[\s\S]*approval_3_status = 'WAITING'/i.test(queryText)) {
+        assert.deepEqual(params, [77, "APP-01", "approved", "MDM-01"]);
+        return {
+          rows: [
+            {
+              request_id: 77,
+              approval_1_user_id: "APP-01",
+              approval_1_status: "APPROVED",
+              approval_1_at: "2026-05-20 12:00",
+              approval_1_remark: "approved",
+              approval_2_user_id: null,
+              approval_2_status: "APPROVED",
+              approval_2_at: null,
+              approval_2_remark: null,
+              approval_3_user_id: "MDM-01",
+              approval_3_status: "WAITING",
+              approval_3_at: null,
+              approval_3_remark: null,
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+
+      if (/SET assigned_to = \$2,/i.test(queryText)) {
+        return { rows: [], rowCount: 1 };
+      }
+
+      throw new Error(`Unexpected query: ${queryText}`);
+    },
+    release: () => {},
+  });
+
+  Material.getSubGroupById = async () => ({ id: 110, item_group_id: 12, deleted_at: null });
+  MaterialTemplate.validateMaterialRequestTemplate = async ({ requestFields, templateValues }) => ({
+    errors: [],
+    materialDescription: requestFields.material_description,
+    normalizedRequestFields: {
+      material_description: requestFields.material_description,
+      base_unit_of_measure: requestFields.base_unit_of_measure,
+    },
+    normalizedTemplateValues: templateValues,
+  });
+
+  try {
+    const result = await Material.approveSingleRequestByAdmin({
+      requestId: 77,
+      actorUserId: "APP-01",
+      actorUsername: "approver.user",
+      remark: "approved",
+      editedRequest: null,
+    });
+
+  assert.deepEqual(result, {
+    request_id: 77,
+    stage: "Approval 1",
+    next_stage: "Approval 3",
+    approval_3_user_id: "MDM-01",
+    approval_3_status: "WAITING",
+  });
+  } finally {
+    db.connect = originalConnect;
+    Material.getSubGroupById = originalGetSubGroupById;
+    MaterialTemplate.validateMaterialRequestTemplate = originalValidateMaterialRequestTemplate;
+  }
+});
+
 test("approveSingleRequestByAdmin skips history insert when edit-history table is missing", async () => {
   const originalConnect = db.connect;
   const originalGetSubGroupById = Material.getSubGroupById;
@@ -1749,6 +2317,127 @@ test("approveSingleRequestByAdmin skips history insert when edit-history table i
   }
 });
 
+test("createSingleRequest stores aligned insert values for Extend and auto-assigns MDM approval 3 when available", async () => {
+  const originalConnect = db.connect;
+  const originalExistsSync = require("fs").existsSync;
+  const originalMkdirSync = require("fs").mkdirSync;
+  const originalReadFileSync = require("fs").readFileSync;
+  const originalWriteFileSync = require("fs").writeFileSync;
+  let insertParams = null;
+
+  require("fs").existsSync = () => true;
+  require("fs").mkdirSync = () => {};
+  require("fs").readFileSync = () => Buffer.from("stub");
+  require("fs").writeFileSync = () => {};
+
+  db.connect = async () => ({
+    query: async (queryText, params = []) => {
+      if (queryText === "BEGIN" || queryText === "COMMIT" || queryText === "ROLLBACK") {
+        return { rows: [], rowCount: null };
+      }
+
+      if (/nextval\(pg_get_serial_sequence\('mat_single_request', 'id'\)\)/i.test(queryText)) {
+        return { rows: [{ next_id: 77 }], rowCount: 1 };
+      }
+
+      if (/SELECT approval_1_user_id, approval_2_user_id\s+FROM mat_single_request_approval/i.test(queryText)) {
+        return { rows: [], rowCount: 0 };
+      }
+
+      if (/FROM mst_user mu[\s\S]*JOIN mst_page_access/i.test(queryText)) {
+        return {
+          rows: [{ user_id: "MDM-01" }],
+          rowCount: 1,
+        };
+      }
+
+      if (/INSERT INTO mat_single_request\s*\(/i.test(queryText)) {
+        insertParams = params;
+        return {
+          rows: [
+            {
+              id: 77,
+              request_no: "1000000077",
+              ticket_type: "Extend",
+              material_code: "MAT-001",
+              change_extend_reason: "Open new storage",
+              material_description: null,
+              base_uom: null,
+              status: "Submit",
+               assigned_to: "Approval 3",
+               created_by: "REQ-01",
+               created_at: new Date("2026-05-26T00:00:00.000Z"),
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+
+      throw new Error(`Unexpected query: ${queryText}`);
+    },
+    release: () => {},
+  });
+
+  try {
+    const result = await Material.createSingleRequest({
+      ticketType: "Extend",
+      materialCode: "MAT-001",
+      changeExtendReason: "Open new storage",
+      materialGroupId: 21,
+      materialSubGroupId: 210,
+      requestFields: {
+        plant: "P1",
+        storage_location: "S1",
+      },
+      templateValues: {},
+      attachments: [],
+      createdBy: "REQ-01",
+      createdByUsername: "requester.user",
+    });
+
+    assert.equal(result.ticket_type, "Extend");
+    assert.ok(insertParams);
+      assert.equal(insertParams.length, 22);
+      assert.deepEqual(insertParams, [
+      77,
+      "1000000077",
+      "Extend",
+      "Open new storage",
+      21,
+      210,
+      "P1",
+      "S1",
+      undefined,
+      undefined,
+      null,
+      null,
+      null,
+      JSON.stringify({
+        requestFields: {
+          plant: "P1",
+          storage_location: "S1",
+          material_number: "MAT-001",
+        },
+        templateValues: {},
+      }),
+      "Approval 3",
+      "REQ-01",
+      null,
+      "APPROVED",
+      null,
+      "APPROVED",
+      "MDM-01",
+      "WAITING",
+    ]);
+  } finally {
+    db.connect = originalConnect;
+    require("fs").existsSync = originalExistsSync;
+    require("fs").mkdirSync = originalMkdirSync;
+    require("fs").readFileSync = originalReadFileSync;
+    require("fs").writeFileSync = originalWriteFileSync;
+  }
+});
+
 test("material model exposes single request rework and detail methods", () => {
   assert.equal(typeof Material.requestSingleRequestRework, "function");
   assert.equal(typeof Material.saveSingleRequestRework, "function");
@@ -1781,6 +2470,13 @@ test("saveSingleRequestRework keeps latest rework metadata while resetting revis
   );
   assert.match(Material.saveSingleRequestRework.toString(), /rework_stage/);
   assert.match(Material.saveSingleRequestRework.toString(), /rework_reason/);
+});
+
+test("approval edit preparation scopes Change and Extend rework fields", () => {
+  const source = Material.__private.prepareSingleRequestApprovalEditPatch.toString();
+  assert.match(source, /ticket_type|ticketType/i);
+  assert.match(source, /change_extend_reason/i);
+  assert.match(source, /material_number/i);
 });
 
 test("controller exports single request detail and rework handlers", () => {
@@ -2170,6 +2866,79 @@ test("saveSingleRequestRework keeps requested attachments and appends new upload
   }
 });
 
+test("saveSingleRequestRework rejects attachment mutation for Change tickets", async () => {
+  const originalConnect = db.connect;
+
+  db.connect = async () => ({
+    query: async queryText => {
+      if (queryText === "BEGIN" || queryText === "ROLLBACK") {
+        return { rows: [], rowCount: null };
+      }
+
+      if (/FOR UPDATE OF r/.test(queryText)) {
+        return {
+          rows: [
+            {
+              request_id: 77,
+              request_no: "1000000077",
+              created_by: "REQ-01",
+              created_at: new Date("2026-05-01T08:00:00.000Z"),
+              status: "Rework",
+              ticket_type: "Change",
+              material_code: "MAT-001",
+              change_extend_reason: "Need update",
+              material_group_code: "CHEM",
+              requester_user_id: "REQ-01",
+              approval_1_status: "REWORK",
+              approval_2_status: "APPROVED",
+              approval_3_status: "WAITING",
+              rework_stage: "Approval 1",
+              rework_by_user_id: "APP-01",
+              rework_reason: "Need update",
+              material_group_id: 12,
+              material_sub_group_id: 110,
+              plant_code: "P1",
+              sloc_code: "S1",
+              material_description: "Original desc",
+              base_uom: "EA",
+              template_payload: { requestFields: {}, templateValues: {} },
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+
+      throw new Error(`Unexpected query: ${queryText}`);
+    },
+    release: () => {},
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        Material.saveSingleRequestRework({
+          requestId: 77,
+          actorUserId: "REQ-01",
+          actorUsername: "requester.user",
+          editedRequest: {
+            changeExtendReason: "Need update",
+          },
+          attachments: {
+            keepAttachmentIds: [10],
+            newAttachments: [],
+          },
+        }),
+      error => {
+        assert.equal(error.statusCode, 400);
+        assert.match(error.message, /do not support attachments/i);
+        return true;
+      }
+    );
+  } finally {
+    db.connect = originalConnect;
+  }
+});
+
 test("saveSingleRequestRework persists selected material group for rework edits", async () => {
   const originalConnect = db.connect;
   const originalGetSubGroupById = Material.getSubGroupById;
@@ -2438,6 +3207,61 @@ test("saveSingleRequestRework controller rejects non-multipart attachment update
     response.jsonPayload.message,
     /Attachment updates for single request rework require multipart\/form-data/i
   );
+});
+
+test("saveSingleRequestRework controller forwards JSON Change editedRequest aliases", async () => {
+  const originalSaveSingleRequestRework = Material.saveSingleRequestRework;
+  let receivedPayload = null;
+
+  Material.saveSingleRequestRework = async payload => {
+    receivedPayload = payload;
+    return { request_id: 77, stage: "Approval 1", status: "Submit" };
+  };
+
+  const response = {
+    statusCode: null,
+    jsonPayload: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      this.jsonPayload = payload;
+      return this;
+    },
+  };
+
+  try {
+    await MaterialController.saveSingleRequestRework(
+      {
+        params: { id: "77" },
+        cookies: { user_id: "REQ-01", username: "requester.user" },
+        headers: { "content-type": "application/json" },
+        body: {
+          editedRequest: {
+            ticketType: "Change",
+            changeExtendReason: "Need rename",
+            baseUom: "KG",
+            materialDescription: "Updated desc",
+            templatePayload: { templateValues: { density: "1.2" } },
+          },
+        },
+      },
+      response
+    );
+
+    assert.equal(response.statusCode, 200);
+    assert.ok(receivedPayload);
+    assert.deepEqual(receivedPayload.editedRequest, {
+      ticket_type: "Change",
+      change_extend_reason: "Need rename",
+      base_uom: "KG",
+      material_description: "Updated desc",
+      template_payload: { templateValues: { density: "1.2" } },
+    });
+  } finally {
+    Material.saveSingleRequestRework = originalSaveSingleRequestRework;
+  }
 });
 
 test("attachment path helpers normalize and contain filesystem paths", () => {
