@@ -150,6 +150,16 @@ router.post(
     AuthToken.authSession,
     MaterialController.createSingleRequest
 );
+router.post(
+    "/requests/mass",
+    AuthToken.authSession,
+    MaterialController.createMassRequest
+);
+router.get(
+    "/requests/mass",
+    AuthToken.authSession,
+    MaterialController.getMassRequests
+);
 router.get(
     "/requests/single",
     AuthToken.authSession,
@@ -159,6 +169,31 @@ router.get(
     "/requests/single/approval-inbox",
     AuthToken.authSession,
     MaterialController.getSingleRequestApprovalInbox
+);
+router.get(
+    "/requests/mass/approval-inbox",
+    AuthToken.authSession,
+    MaterialController.getMassRequestApprovalInbox
+);
+router.post(
+    "/requests/mass/:id/approve",
+    AuthToken.authSession,
+    MaterialController.approveMassRequest
+);
+router.post(
+    "/requests/mass/:id/rework",
+    AuthToken.authSession,
+    MaterialController.requestMassRequestRework
+);
+router.post(
+    "/requests/mass/:id/reject",
+    AuthToken.authSession,
+    MaterialController.rejectMassRequest
+);
+router.get(
+    "/requests/mass/:id/items",
+    AuthToken.authSession,
+    MaterialController.getMassRequestItems
 );
 router.get(
     "/requests/single/approver-masters",
@@ -200,6 +235,12 @@ router.put(
     AuthToken.authSession,
     MaterialController.saveSingleRequestRework
 );
+router.put(
+    "/requests/mass/:id/rework",
+    AuthToken.authSession,
+    MaterialController.saveMassRequestRework
+);
+
 
 // Material template endpoints
 router.get("/templates", MaterialController.getMaterialTemplates);

@@ -420,6 +420,245 @@ const withMaterialTemplateAliases = payload => {
     };
 };
 
+// ---------------------------------------------------------------------------
+// Mass material request (create) helpers
+// ---------------------------------------------------------------------------
+const MASS_MAX_ROWS = 10;
+const MASS_MIN_ROWS = 1;
+const MASS_MAX_ATTACHMENTS_PER_ROW = 3;
+const MASS_MIN_ATTACHMENTS_PER_ROW = 1;
+const MASS_REQUEST_FILE_EXTENSIONS = SINGLE_REQUEST_FILE_EXTENSIONS;
+const MASS_REQUEST_TEXT_FIELDS = [
+    "plant",
+    "sloc",
+    "materialGroup",
+    "materialSubGroup",
+    "description",
+    "poText",
+    "uom",
+    "spesifikasiTambahan",
+];
+
+const createEmptyMassRequestRow = () => ({
+    plant: "",
+    sloc: "",
+    materialGroup: "",
+    materialSubGroup: "",
+    description: "",
+    poText: "",
+    uom: "",
+    spesifikasiTambahan: "",
+});
+
+const normalizeMassRequestRow = (row = {}) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+        return createEmptyMassRequestRow();
+    }
+
+    const normalized = createEmptyMassRequestRow();
+    for (const fieldKey of MASS_REQUEST_TEXT_FIELDS) {
+        normalized[fieldKey] = String(row[fieldKey] ?? "").trim();
+    }
+    return normalized;
+};
+
+const parseMassRequestRows = value => {
+    const parsed = parseJsonField(value);
+    const source = Array.isArray(parsed) ? parsed : [];
+    const rows = source.map(normalizeMassRequestRow);
+
+    if (rows.length >= MASS_MAX_ROWS) {
+        return rows.slice(0, MASS_MAX_ROWS);
+    }
+
+    const padded = rows.slice();
+    while (padded.length < MASS_MAX_ROWS) {
+        padded.push(createEmptyMassRequestRow());
+    }
+    return padded;
+};
+
+const parseMassRequestFileRowIndexes = value => {
+    if (value === undefined || value === null || value === "") {
+        return [];
+    }
+
+    const raw = Array.isArray(value) ? value : [value];
+    return raw
+        .map(entry => Number.parseInt(toFieldValue(entry), 10))
+        .filter(index => Number.isInteger(index) && index >= 0);
+};
+
+const isMassRequestRowFilled = row =>
+    MASS_REQUEST_TEXT_FIELDS.some(
+        fieldKey => String(row?.[fieldKey] || "").trim() !== ""
+    );
+
+const validateMassRequestRowText = row => {
+    const errors = [];
+    for (const fieldKey of MASS_REQUEST_TEXT_FIELDS) {
+        if (String(row?.[fieldKey] || "").trim() === "") {
+            errors.push({
+                fieldKey,
+                message: fieldKeyToIndonesianMessage(fieldKey),
+            });
+        }
+    }
+    return errors;
+};
+
+const fieldKeyToIndonesianMessage = fieldKey => {
+    switch (fieldKey) {
+        case "plant":
+            return "Plant wajib diisi.";
+        case "sloc":
+            return "Sloc wajib diisi.";
+        case "materialGroup":
+            return "Material group wajib diisi.";
+        case "materialSubGroup":
+            return "Sub material group wajib diisi.";
+        case "description":
+            return "Material description wajib diisi.";
+        case "poText":
+            return "PO Text wajib diisi.";
+        case "uom":
+            return "Base UoM wajib diisi.";
+        case "spesifikasiTambahan":
+            return "Spesifikasi tambahan wajib diisi.";
+        default:
+            return "Field wajib diisi.";
+    }
+};
+
+const validateMassRequestBatch = ({ rows, files, fileRowIndexes }) => {
+    const errors = [];
+    const filledRowIndexes = [];
+    const filesByRow = Array.from({ length: MASS_MAX_ROWS }, () => 0);
+
+    for (let i = 0; i < fileRowIndexes.length && i < files.length; i += 1) {
+        const index = fileRowIndexes[i];
+        if (
+            Number.isInteger(index) &&
+            index >= 0 &&
+            index < MASS_MAX_ROWS
+        ) {
+            filesByRow[index] = (filesByRow[index] || 0) + 1;
+        }
+    }
+
+    if (rows.length > MASS_MAX_ROWS) {
+        errors.push({
+            rowIndex: -1,
+            fieldKey: "rows",
+            message: `Maksimal ${MASS_MAX_ROWS} baris per submit.`,
+        });
+    }
+
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+        const row = rows[rowIndex];
+        if (!isMassRequestRowFilled(row)) {
+            continue;
+        }
+        filledRowIndexes.push(rowIndex);
+
+        for (const fieldError of validateMassRequestRowText(row)) {
+            errors.push({ rowIndex, ...fieldError });
+        }
+
+        if (String(row.description || "").length > 255) {
+            errors.push({
+                rowIndex,
+                fieldKey: "description",
+                message: "Material description maksimal 255 karakter.",
+            });
+        }
+
+        const attachmentCount = filesByRow[rowIndex] || 0;
+        if (attachmentCount < MASS_MIN_ATTACHMENTS_PER_ROW) {
+            errors.push({
+                rowIndex,
+                fieldKey: "attachments",
+                message: `Minimal ${MASS_MIN_ATTACHMENTS_PER_ROW} attachment per baris.`,
+            });
+        } else if (attachmentCount > MASS_MAX_ATTACHMENTS_PER_ROW) {
+            errors.push({
+                rowIndex,
+                fieldKey: "attachments",
+                message: `Maksimal ${MASS_MAX_ATTACHMENTS_PER_ROW} attachment per baris.`,
+            });
+        }
+    }
+
+    if (filledRowIndexes.length < MASS_MIN_ROWS && errors.length === 0) {
+        errors.push({
+            rowIndex: -1,
+            fieldKey: "rows",
+            message: "Minimal isi 1 baris.",
+        });
+    }
+
+    return { errors, filledRowIndexes };
+};
+
+const buildMassRequestAttachmentsByRow = ({ rows, files, fileRowIndexes }) => {
+    const result = Array.from({ length: MASS_MAX_ROWS }, () => []);
+
+    for (let i = 0; i < files.length; i += 1) {
+        const file = files[i];
+        const rawIndex = fileRowIndexes[i];
+        const rowIndex = Number.parseInt(rawIndex, 10);
+
+        if (
+            !Number.isInteger(rowIndex) ||
+            rowIndex < 0 ||
+            rowIndex >= MASS_MAX_ROWS
+        ) {
+            const error = new Error(
+                "Invalid file row mapping. Each file must be linked to a valid row index."
+            );
+            error.statusCode = 400;
+            throw error;
+        }
+
+        const originalFilename =
+            file.originalFilename || file.newFilename || "attachment";
+        const { extension, safeOriginalName, safeBaseName } =
+            sanitizeUploadName(originalFilename);
+
+        if (!MASS_REQUEST_FILE_EXTENSIONS.includes(extension)) {
+            const error = new Error(
+                "Invalid file format. Please upload files with valid extensions: " +
+                    MASS_REQUEST_FILE_EXTENSIONS.join(", ")
+            );
+            error.statusCode = 400;
+            throw error;
+        }
+
+        const row = rows[rowIndex] || createEmptyMassRequestRow();
+        const safeMaterialGroupCode = sanitizePathSegment(row.materialGroup);
+        const safeSubgroupCode = sanitizePathSegment(row.materialSubGroup);
+        const timestamp = Date.now().toString();
+        const newName = `${timestamp}_${safeBaseName}.${extension}`;
+        const relativePath = path.posix.join(
+            "mass-request-attachments",
+            safeMaterialGroupCode,
+            safeSubgroupCode,
+            newName
+        );
+
+        result[rowIndex].push({
+            tempPath: file.filepath,
+            originalName: safeOriginalName,
+            newName,
+            relativePath,
+            extension,
+            mimeType: getMimeType(extension),
+        });
+    }
+
+    return result;
+};
+
 const MaterialController = {
     // Create a new material group
     createMaterialGroup: async (req, res) => {
@@ -2024,6 +2263,110 @@ const MaterialController = {
             cleanupTempFiles(tempFilePaths);
         }
     },
+    // Create a batch of material-create requests (1..10 rows per submit).
+    createMassRequest: async (req, res) => {
+        let tempFilePaths = [];
+
+        try {
+            const userId = req.cookies.user_id;
+            const isMultipartRequest = String(
+                req.headers?.["content-type"] || ""
+            ).includes("multipart/form-data");
+
+            if (!userId) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Unauthorized",
+                });
+            }
+
+            if (!isMultipartRequest) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Mass request must be submitted as multipart/form-data.",
+                });
+            }
+
+            const form = new formidable.IncomingForm();
+            form.options.multiples = true;
+            form.options.maxFileSize = 5 * 1024 * 1024;
+
+            const [fields, items] = await form.parse(req);
+            const rows = parseMassRequestRows(toFieldValue(fields.rows));
+            const rawFiles = items.files || items.file || [];
+            const files = (
+                Array.isArray(rawFiles) ? rawFiles : [rawFiles]
+            ).filter(Boolean);
+            tempFilePaths = files.map(file => file.filepath).filter(Boolean);
+            const fileRowIndexes = parseMassRequestFileRowIndexes(
+                fields.fileRowIndex
+            );
+            const massRequestReason = String(
+                toFieldValue(fields.massRequestReason) || ""
+            ).trim() || null;
+
+            if (!massRequestReason) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Mass request reason wajib diisi.",
+                });
+            }
+
+            const validation = validateMassRequestBatch({
+                rows,
+                files,
+                fileRowIndexes,
+            });
+
+            if (validation.errors.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Material request validation failed",
+                    errors: validation.errors,
+                });
+            }
+
+            const attachmentsByRow = buildMassRequestAttachmentsByRow({
+                rows,
+                files,
+                fileRowIndexes,
+            });
+
+            const createdMassRequest = await Material.createMassRequest({
+                rows: rows.filter((_, idx) =>
+                    validation.filledRowIndexes.includes(idx)
+                ),
+                attachmentsByRow: attachmentsByRow.filter((_, idx) =>
+                    validation.filledRowIndexes.includes(idx)
+                ),
+                createdBy: userId,
+                createdByUsername: req.cookies?.username ?? null,
+                massRequestReason,
+            });
+            return res.status(201).json({
+                success: true,
+                message: "Mass material request created successfully",
+                data: createdMassRequest,
+            });
+        } catch (error) {
+            const statusCode =
+                error.statusCode || (error.code === 1016 ? 400 : 500);
+
+            return res.status(statusCode).json({
+                success: false,
+                message:
+                    error.code === 1016
+                        ? "File size exceeded. Maximum file size is 5MB"
+                        : error.message ||
+                          "Failed to create mass material request",
+                errors: error.errors || [],
+            });
+        } finally {
+            cleanupTempFiles(tempFilePaths);
+        }
+    },
+
 
     getSingleRequests: async (req, res) => {
         try {
@@ -2038,6 +2381,24 @@ const MaterialController = {
             return res.status(500).json({
                 success: false,
                 message: "Failed to fetch single material requests",
+                error: error.message,
+            });
+        }
+    },
+
+    getMassRequests: async (req, res) => {
+        try {
+            const userId = req.cookies.user_id;
+            const rows = await Material.getMassRequestsByUser(userId);
+
+            return res.status(200).json({
+                success: true,
+                data: rows,
+            });
+        } catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to fetch mass material requests",
                 error: error.message,
             });
         }
@@ -2068,6 +2429,129 @@ const MaterialController = {
         }
     },
 
+
+    getMassRequestApprovalInbox: async (req, res) => {
+        try {
+            const actorUsername = req.cookies?.username;
+            const actorUserId = req.cookies?.user_id;
+
+            const rows = await Material.getMassRequestApprovalInbox(actorUserId, actorUsername);
+
+            return res.status(200).json({
+                success: true,
+                message: "Mass request approval inbox fetched successfully",
+                data: rows,
+            });
+        } catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to fetch mass request approval inbox",
+                error: error.message,
+            });
+        }
+    },
+
+    approveMassRequest: async (req, res) => {
+        try {
+            const result = await Material.approveMassRequest({
+                massRequestId: req.params.id,
+                actorUserId: req.cookies.user_id,
+                actorUsername: req.cookies.username,
+                remark: req.body?.remark ?? null,
+                items: req.body?.items ?? null,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: "Mass request approved successfully",
+                data: result,
+            });
+        } catch (error) {
+            if (Number.isInteger(error?.statusCode)) {
+                return res.status(error.statusCode).json({
+                    success: false,
+                    message: error.message,
+                });
+            }
+
+            return res.status(500).json({
+                success: false,
+                message: "Failed to approve mass request",
+                error: error.message,
+            });
+        }
+    },
+
+    requestMassRequestRework: async (req, res) => {
+        try {
+            const result = await Material.requestMassRequestRework({
+                massRequestId: req.params.id,
+                actorUserId: req.cookies.user_id,
+                actorUsername: req.cookies.username,
+                reason: req.body?.reason ?? null,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: "Mass request rework requested successfully",
+                data: result,
+            });
+        } catch (error) {
+            const statusCode = error.statusCode || 500;
+            return res.status(statusCode).json({
+                success: false,
+                message:
+                    statusCode === 500
+                        ? "Failed to request mass request rework"
+                        : error.message,
+                error: statusCode === 500 ? error.message : undefined,
+            });
+        }
+    },
+
+    rejectMassRequest: async (req, res) => {
+        try {
+            const result = await Material.rejectMassRequestByAdmin({
+                massRequestId: req.params.id,
+                actorUserId: req.cookies.user_id,
+                actorUsername: req.cookies.username,
+                reason: req.body?.reason ?? null,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: "Mass request rejected successfully",
+                data: result,
+            });
+        } catch (error) {
+            const statusCode = error.statusCode || 500;
+            return res.status(statusCode).json({
+                success: false,
+                message:
+                    statusCode === 500
+                        ? "Failed to reject mass request"
+                        : error.message,
+                error: statusCode === 500 ? error.message : undefined,
+            });
+        }
+    },
+
+    getMassRequestItems: async (req, res) => {
+        try {
+            const items = await Material.getMassRequestItems(req.params.id);
+
+            return res.status(200).json({
+                success: true,
+                data: items,
+            });
+        } catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to fetch mass request items",
+                error: error.message,
+            });
+        }
+    },
     getSingleRequestApprovalInbox: async (req, res) => {
         try {
             const actorUsername = req.cookies?.username;
@@ -2650,6 +3134,34 @@ const MaterialController = {
             });
         } catch (error) {
             res.status(500).json({ success: false, error: error.message });
+        }
+    },
+
+    saveMassRequestRework: async (req, res) => {
+        try {
+            const result = await Material.saveMassRequestRework({
+                massRequestId: req.params.id,
+                actorUserId: req.cookies.user_id,
+                items: req.body?.items ?? null,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: "Mass request rework saved successfully",
+                data: result,
+            });
+        } catch (error) {
+            if (Number.isInteger(error?.statusCode)) {
+                return res.status(error.statusCode).json({
+                    success: false,
+                    message: error.message,
+                });
+            }
+            return res.status(500).json({
+                success: false,
+                message: "Failed to save mass request rework",
+                error: error.message,
+            });
         }
     },
 };

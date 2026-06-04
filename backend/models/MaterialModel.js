@@ -33,6 +33,16 @@ const {
     normalizeSingleRequestTicketType,
     resolveSingleRequestApprovalStage,
 } = require("../helper/singleRequestApproval.js");
+const {
+    resolveMassRequestApprovalStage,
+    isMassRequestApprovalInboxEligible,
+    filterMassRequestApprovalInboxRows,
+    canActorApproveMassRequestStage,
+    buildMassRequestApprovePatch,
+    buildMassRequestReworkPatch,
+    buildMassRequestRejectPatch,
+    syncMassRequestItemApprovalSnapshot,
+} = require("../helper/massRequestApproval");
 
 const buildSingleRequestApprovalError = (message, statusCode, code) => {
     const error = new Error(message);
@@ -5248,6 +5258,288 @@ const Material = {
             throw error;
         }
     },
+    createMassRequest: async ({
+        rows = [],
+        attachmentsByRow = [],
+        createdBy,
+        createdByUsername = null,
+        massRequestReason = null,
+    }) => {
+        const savedFiles = [];
+
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const {
+                        rows: [{ next_id: nextMassId }],
+                    } = await client.query(
+                        "SELECT nextval(pg_get_serial_sequence('mat_mass_request', 'id')) AS next_id"
+                    );
+                    const massRequestNo = String(
+                        2000000000 + Number(nextMassId)
+                    );
+
+                    const requesterMasterResult = await client.query(
+                        `SELECT approval_1_user_id, approval_2_user_id
+                         FROM mat_single_request_approval
+                         WHERE requester_user_id = $1`,
+                        [createdBy]
+                    );
+                    const approvalMaster =
+                        requesterMasterResult.rows[0] || null;
+
+                    const massHeaderResult = await client.query(
+                        `INSERT INTO mat_mass_request (
+                            id,
+                            mass_request_no,
+                            item_count,
+                            mass_request_reason,
+                            created_by,
+                            created_by_username,
+                            created_at,
+                            updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+                        RETURNING id, mass_request_no, item_count, mass_request_reason, created_by, created_by_username, created_at`,
+                        [
+                            nextMassId,
+                            massRequestNo,
+                            rows.length,
+                            String(massRequestReason || "").trim() || null,
+                            createdBy,
+                            createdByUsername,
+                        ]
+                    );
+                    const insertedItems = [];
+
+                    for (
+                        let itemIndex = 0;
+                        itemIndex < rows.length;
+                        itemIndex += 1
+                    ) {
+                        const row = rows[itemIndex];
+                        const {
+                            rows: [{ next_id: nextItemId }],
+                        } = await client.query(
+                            "SELECT nextval(pg_get_serial_sequence('mat_mass_request_item', 'id')) AS next_id"
+                        );
+                        const itemRequestNo = String(
+                            2000000000 + Number(nextItemId)
+                        );
+                        const itemNo = itemIndex + 1;
+
+                        const snapshot = buildSingleRequestApprovalSnapshot({
+                            ticketType: "Create",
+                            requesterUserId: createdBy,
+                            requesterUsername: createdByUsername,
+                            approvalMaster,
+                            approval3UserId: null,
+                        });
+
+                        const itemResult = await client.query(
+                            `INSERT INTO mat_mass_request_item (
+                                id,
+                                mass_request_id,
+                                item_no,
+                                request_no,
+                                ticket_type,
+                                plant_code,
+                                sloc_code,
+                                material_group,
+                                material_sub_group,
+                                material_description,
+                                po_text,
+                                base_uom,
+                                spesifikasi_tambahan,
+                                status,
+                                assigned_to,
+                                created_by,
+                                created_at,
+                                updated_at,
+                                approval_1_user_id,
+                                approval_1_status,
+                                approval_2_user_id,
+                                approval_2_status,
+                                approval_3_user_id,
+                                approval_3_status
+                            ) VALUES (
+                                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                                'Submit', 'Approval 1', $14, NOW(), NOW(),
+                                $15, $16, $17, $18, $19, $20
+                            )
+                            RETURNING id, item_no, request_no, ticket_type, status, assigned_to, created_by, created_at`,
+                            [
+                                nextItemId,
+                                nextMassId,
+                                itemNo,
+                                itemRequestNo,
+                                "Create",
+                                String(row.plant || "").trim() || null,
+                                String(row.sloc || "").trim() || null,
+                                String(row.materialGroup || "").trim() ||
+                                    null,
+                                String(row.materialSubGroup || "").trim() ||
+                                    null,
+                                String(row.description || "").trim(),
+                                String(row.poText || "").trim() || null,
+                                String(row.uom || "").trim(),
+                                String(row.spesifikasiTambahan || "").trim() ||
+                                    null,
+                                createdBy,
+                                snapshot.approval_1_user_id,
+                                snapshot.approval_1_status,
+                                snapshot.approval_2_user_id,
+                                snapshot.approval_2_status,
+                                snapshot.approval_3_user_id,
+                                snapshot.approval_3_status,
+                            ]
+                        );
+
+                        const itemRow = itemResult.rows[0];
+                        const rowAttachments =
+                            attachmentsByRow[itemIndex] || [];
+                        const persistedAttachments = [];
+
+                        for (const file of rowAttachments) {
+                            const attachmentResult = await client.query(
+                                `INSERT INTO mat_mass_request_attachment (
+                                    item_id,
+                                    file_name,
+                                    file_path,
+                                    file_type,
+                                    created_at
+                                ) VALUES ($1, $2, $3, $4, NOW())
+                                RETURNING id, file_name, file_path, file_type, created_at`,
+                                [
+                                    nextItemId,
+                                    file.originalName,
+                                    file.relativePath,
+                                    file.mimeType,
+                                ]
+                            );
+                            persistedAttachments.push(
+                                attachmentResult.rows[0]
+                            );
+                        }
+
+                        const publicDir = path.join(
+                            path.resolve(),
+                            "./backend/public"
+                        );
+                        for (const file of rowAttachments) {
+                            const finalPath = path.join(
+                                publicDir,
+                                file.relativePath
+                            );
+                            const finalDir = path.dirname(finalPath);
+                            if (!fs.existsSync(finalDir)) {
+                                fs.mkdirSync(finalDir, { recursive: true });
+                            }
+                            const rawData = fs.readFileSync(file.tempPath);
+                            fs.writeFileSync(finalPath, rawData);
+                            savedFiles.push(finalPath);
+                        }
+
+                        insertedItems.push({
+                            ...itemRow,
+                            attachments: persistedAttachments,
+                        });
+                    }
+
+                    await client.query("COMMIT");
+
+                    return {
+                        ...massHeaderResult.rows[0],
+                        items: insertedItems,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            for (const savedFile of savedFiles) {
+                if (fs.existsSync(savedFile)) {
+                    fs.unlinkSync(savedFile);
+                }
+            }
+
+            console.error("Error creating mass material request:", error);
+            throw error;
+        }
+    },
+
+    getMassRequestsByUser: async createdBy => {
+        try {
+            return await DBClientWrapper(async client => {
+                const result = await client.query(
+                    `SELECT
+                        m.id,
+                        m.mass_request_no,
+                        m.item_count,
+                        m.mass_request_reason,
+                        m.created_by,
+                        m.created_by_username,
+                        TO_CHAR(m.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
+                        first_item.material_description AS first_item_material_description,
+                        first_item.base_uom AS first_item_uom,
+                        first_item.status AS first_item_status,
+                        first_item.assigned_to AS first_item_assigned_to,
+                        first_item.approval_1_user_id AS first_item_approval_1_user_id,
+                        first_item.approval_1_status AS first_item_approval_1_status,
+                        first_item.approval_1_at AS first_item_approval_1_at,
+                        first_item.approval_1_remark AS first_item_approval_1_remark,
+                        first_item.approval_2_user_id AS first_item_approval_2_user_id,
+                        first_item.approval_2_status AS first_item_approval_2_status,
+                        first_item.approval_2_at AS first_item_approval_2_at,
+                        first_item.approval_2_remark AS first_item_approval_2_remark,
+                        first_item.approval_3_user_id AS first_item_approval_3_user_id,
+                        first_item.approval_3_status AS first_item_approval_3_status,
+                        first_item.approval_3_at AS first_item_approval_3_at,
+                        first_item.approval_3_remark AS first_item_approval_3_remark,
+                        COALESCE(au1.fullname, au1.username, first_item.approval_1_user_id) AS first_item_approval_1_user_name,
+                        COALESCE(au2.fullname, au2.username, first_item.approval_2_user_id) AS first_item_approval_2_user_name,
+                        COALESCE(au3.fullname, au3.username, first_item.approval_3_user_id) AS first_item_approval_3_user_name
+                    FROM mat_mass_request m
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            i.material_description,
+                            i.base_uom,
+                            i.status,
+                            i.assigned_to,
+                            i.approval_1_user_id,
+                            i.approval_1_status,
+                            i.approval_1_at,
+                            i.approval_1_remark,
+                            i.approval_2_user_id,
+                            i.approval_2_status,
+                            i.approval_2_at,
+                            i.approval_2_remark,
+                            i.approval_3_user_id,
+                            i.approval_3_status,
+                            i.approval_3_at,
+                            i.approval_3_remark
+                        FROM mat_mass_request_item i
+                        WHERE i.mass_request_id = m.id
+                        ORDER BY i.item_no ASC
+                        LIMIT 1
+                    ) first_item ON TRUE
+                    LEFT JOIN mst_user au1 ON au1.user_id = first_item.approval_1_user_id
+                    LEFT JOIN mst_user au2 ON au2.user_id = first_item.approval_2_user_id
+                    LEFT JOIN mst_user au3 ON au3.user_id = first_item.approval_3_user_id
+                    WHERE m.created_by = $1
+                    ORDER BY m.created_at DESC, m.id DESC`,
+                    [createdBy]
+                );
+
+                return result.rows;
+            });
+        } catch (error) {
+            console.error("Error fetching mass requests by user:", error);
+            throw error;
+        }
+    },
 
     hasActiveSingleRequest: async ({ materialCode, ticketType }) => {
         const normalizedTicketType = normalizeSingleRequestTicketType(ticketType);
@@ -5944,11 +6236,879 @@ const Material = {
                 }
             }
 
+            // Cascade to in-flight mass-request items for the same requester.
+            const massItemResult = await client.query(
+                `SELECT i.id, i.approval_1_status, i.approval_2_status
+                 FROM mat_mass_request_item i
+                 JOIN mat_mass_request m ON m.id = i.mass_request_id
+                 WHERE m.created_by = $1
+                   AND i.approval_3_status IS DISTINCT FROM 'APPROVED'
+                   AND UPPER(COALESCE(i.status, '')) NOT IN ('REJECT','REJECTED','CANCEL')
+                 FOR UPDATE OF i`,
+                [requesterUserId]
+            );
+
+            let massUpdated = 0;
+
+            for (const item of massItemResult.rows) {
+                const massPatch = {};
+
+                if (
+                    hasApproval1Patch &&
+                    canEditApprovalAssignee(item.approval_1_status)
+                ) {
+                    massPatch.approval_1_user_id =
+                        master.approval_1_user_id;
+                }
+
+                if (
+                    hasApproval2Patch &&
+                    canEditApprovalAssignee(item.approval_2_status)
+                ) {
+                    massPatch.approval_2_user_id =
+                        master.approval_2_user_id;
+                }
+
+                if (Object.keys(massPatch).length === 0) {
+                    continue;
+                }
+
+                await syncMassRequestItemApprovalSnapshot(
+                    client,
+                    item.id,
+                    massPatch
+                );
+                massUpdated++;
+            }
+
             return {
                 ...result.rows[0],
                 is_locked: false,
+                mass_updated: massUpdated,
             };
         });
+    },
+
+    getMassRequestApprovalInbox: async (actorUserId, actorUsername) => {
+        try {
+            return await DBClientWrapper(async client => {
+                const result = await client.query(
+                    `SELECT
+                        m.id,
+                        m.mass_request_no,
+                        m.item_count,
+                        m.mass_request_reason,
+                        m.created_by,
+                        m.created_by_username,
+                        TO_CHAR(m.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
+                        first_item.status AS first_item_status,
+                        first_item.assigned_to AS first_item_assigned_to,
+                        first_item.approval_1_user_id AS first_item_approval_1_user_id,
+                        first_item.approval_1_status AS first_item_approval_1_status,
+                        first_item.approval_1_at AS first_item_approval_1_at,
+                        first_item.approval_1_remark AS first_item_approval_1_remark,
+                        first_item.approval_2_user_id AS first_item_approval_2_user_id,
+                        first_item.approval_2_status AS first_item_approval_2_status,
+                        first_item.approval_2_at AS first_item_approval_2_at,
+                        first_item.approval_2_remark AS first_item_approval_2_remark,
+                        first_item.approval_3_user_id AS first_item_approval_3_user_id,
+                        first_item.approval_3_status AS first_item_approval_3_status,
+                        first_item.approval_3_at AS first_item_approval_3_at,
+                        first_item.approval_3_remark AS first_item_approval_3_remark,
+                        COALESCE(au.fullname, au.username, m.created_by_username) AS first_item_approval_1_user_name
+                    FROM mat_mass_request m
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            i.status,
+                            i.assigned_to,
+                            i.approval_1_user_id,
+                            i.approval_1_status,
+                            i.approval_1_at,
+                            i.approval_1_remark,
+                            i.approval_2_user_id,
+                            i.approval_2_status,
+                            i.approval_2_at,
+                            i.approval_2_remark,
+                            i.approval_3_user_id,
+                            i.approval_3_status,
+                            i.approval_3_at,
+                            i.approval_3_remark
+                        FROM mat_mass_request_item i
+                        WHERE i.mass_request_id = m.id
+                        ORDER BY i.item_no ASC
+                        LIMIT 1
+                    ) first_item ON TRUE
+                    LEFT JOIN mst_user au ON au.user_id = first_item.approval_1_user_id
+                    ORDER BY m.created_at DESC, m.id DESC`
+                );
+
+                return filterMassRequestApprovalInboxRows(result.rows, {
+                    actorUserId,
+                    actorUsername,
+                });
+            });
+        } catch (error) {
+            console.error(
+                "Error fetching mass request approval inbox:",
+                error
+            );
+            throw error;
+        }
+    },
+
+    approveMassRequest: async ({
+        massRequestId,
+        actorUserId,
+        actorUsername,
+        remark,
+        items,
+    }) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    // Lock and read the first item of the batch to validate stage
+                    const lockResult = await client.query(
+                        `SELECT i.*
+                         FROM mat_mass_request_item i
+                         WHERE i.mass_request_id = $1
+                         ORDER BY i.item_no ASC
+                         LIMIT 1
+                         FOR UPDATE OF i`,
+                        [massRequestId]
+                    );
+
+                    if (lockResult.rows.length === 0) {
+                        throw Object.assign(
+                            new Error("Mass request not found"),
+                            { statusCode: 404, code: "MASS_REQUEST_NOT_FOUND" }
+                        );
+                    }
+
+                    const firstItem = lockResult.rows[0];
+
+                    // Map to inbox row shape for helpers
+                    const approvalRow = {
+                        first_item_status: firstItem.status,
+                        first_item_assigned_to: firstItem.assigned_to,
+                        first_item_approval_1_user_id:
+                            firstItem.approval_1_user_id,
+                        first_item_approval_1_status:
+                            firstItem.approval_1_status,
+                        first_item_approval_2_user_id:
+                            firstItem.approval_2_user_id,
+                        first_item_approval_2_status:
+                            firstItem.approval_2_status,
+                        first_item_approval_3_user_id:
+                            firstItem.approval_3_user_id,
+                        first_item_approval_3_status:
+                            firstItem.approval_3_status,
+                    };
+
+                    const activeStage =
+                        resolveMassRequestApprovalStage(approvalRow);
+
+                    if (
+                        String(firstItem.status || "")
+                            .trim()
+                            .toUpperCase() !== "SUBMIT"
+                    ) {
+                        throw Object.assign(
+                            new Error(
+                                "Mass request can only be approved while status is Submit"
+                            ),
+                            {
+                                statusCode: 409,
+                                code: "MASS_REQUEST_APPROVAL_STATUS_CONFLICT",
+                            }
+                        );
+                    }
+
+                    if (!activeStage) {
+                        throw Object.assign(
+                            new Error(
+                                "Mass request is already processed or not waiting for approval"
+                            ),
+                            {
+                                statusCode: 409,
+                                code: "MASS_REQUEST_APPROVAL_CONFLICT",
+                            }
+                        );
+                    }
+
+                    if (
+                        !canActorApproveMassRequestStage({
+                            row: approvalRow,
+                            actorUserId,
+                            actorUsername,
+                        })
+                    ) {
+                        throw Object.assign(
+                            new Error(
+                                "Forbidden: only the assigned approver or ADMIN can approve this mass request"
+                            ),
+                            {
+                                statusCode: 403,
+                                code: "MASS_REQUEST_APPROVAL_FORBIDDEN",
+                            }
+                        );
+                    }
+
+                    const patch = buildMassRequestApprovePatch({
+                        activeStage,
+                        actorUserId,
+                        actorUsername,
+                        remark,
+                    });
+
+                    // Approval 2 → 3: auto-assign a random MDM_MATERIAL user
+                    if (activeStage === "Approval 2") {
+                        const mdmUser = await getRandomMdmMaterialUser(client);
+
+                        if (!mdmUser) {
+                            throw Object.assign(
+                                new Error(
+                                    "No active MDM_MATERIAL user found for Approval 3 assignment"
+                                ),
+                                {
+                                    statusCode: 409,
+                                    code: "MASS_REQUEST_APPROVAL_NO_MDM_USER",
+                                }
+                            );
+                        }
+
+                        patch.approval_3_user_id = mdmUser.user_id;
+                    }
+
+                    const fieldPrefix = getApprovalStageFieldPrefix(activeStage);
+
+                    // Build SET clause from patch, excluding __sql objects which are handled inline
+                    const patchEntries = Object.entries(patch).filter(
+                        ([_, v]) => !(v && typeof v === "object" && v.__sql)
+                    );
+                    const setClauses = patchEntries.map(
+                        ([field], i) => `${field} = $${i + 2}`
+                    );
+                    // Add __sql fields (NOW()) directly
+                    const nowFields = Object.entries(patch).filter(
+                        ([_, v]) => v && typeof v === "object" && v.__sql
+                    );
+                    const nowClauses = nowFields.map(
+                        ([field]) => `${field} = NOW()`
+                    );
+
+                    // Always set user_id with COALESCE and updated_at
+                    const allSetClauses = [
+                        ...setClauses,
+                        ...nowClauses,
+                        `${fieldPrefix}_user_id = COALESCE(${fieldPrefix}_user_id, $${
+                            patchEntries.length + 2
+                        })`,
+                        `updated_at = NOW()`,
+                    ];
+
+                    const updateQuery = `UPDATE mat_mass_request_item
+                        SET ${allSetClauses.join(", ")}
+                        WHERE mass_request_id = $1
+                        RETURNING id`;
+
+                    const updateParams = [
+                        massRequestId,
+                        ...patchEntries.map(([_, v]) => v),
+                        actorUserId,
+                    ];
+
+                    const updateResult = await client.query(
+                        updateQuery,
+                        updateParams
+                    );
+
+                    if (updateResult.rowCount === 0) {
+                        throw Object.assign(
+                            new Error(
+                                "Mass request is already processed or not waiting for approval"
+                            ),
+                            {
+                                statusCode: 409,
+                                code: "MASS_REQUEST_APPROVAL_CONFLICT",
+                            }
+                        );
+                    }
+
+
+                    // If item edits are provided, update editable fields per item
+                    if (Array.isArray(items) && items.length > 0) {
+                        const ALLOWED_ITEM_FIELDS = [
+                            "material_description",
+                            "base_uom",
+                            "plant_code",
+                            "sloc_code",
+                            "material_group",
+                            "material_sub_group",
+                            "po_text",
+                            "spesifikasi_tambahan",
+                        ];
+
+                        for (const item of items) {
+                            if (!item.id) continue;
+
+                            const edits = {};
+                            for (const field of ALLOWED_ITEM_FIELDS) {
+                                if (item[field] !== undefined) {
+                                    edits[field] = item[field];
+                                }
+                            }
+                            // Handle uom -> base_uom mapping
+                            if (item.uom !== undefined && edits.base_uom === undefined) {
+                                edits.base_uom = item.uom;
+                            }
+
+                            if (Object.keys(edits).length === 0) continue;
+                            const editEntries = Object.entries(edits);
+                            const itemSetClauses = editEntries.map(
+                                ([field], i) => `${field} = $${i + 3}`
+                            );
+                            itemSetClauses.push("updated_at = NOW()");
+
+                            await client.query(
+                                `UPDATE mat_mass_request_item
+                                 SET ${itemSetClauses.join(", ")}
+                                 WHERE id = $1 AND mass_request_id = $2`,
+                                [item.id, massRequestId, ...editEntries.map(([_, v]) => v)]
+                            );
+                        }
+                    }
+                    await client.query("COMMIT");
+
+                    return {
+                        mass_request_id: Number(massRequestId),
+                        stage: activeStage,
+                        status: patch.status,
+                        assigned_to: patch.assigned_to,
+                        updated_count: updateResult.rowCount,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error approving mass request:", error);
+            throw error;
+        }
+    },
+
+    requestMassRequestRework: async ({
+        massRequestId,
+        actorUserId,
+        actorUsername,
+        reason,
+    }) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const lockResult = await client.query(
+                        `SELECT i.*
+                         FROM mat_mass_request_item i
+                         WHERE i.mass_request_id = $1
+                         ORDER BY i.item_no ASC
+                         LIMIT 1
+                         FOR UPDATE OF i`,
+                        [massRequestId]
+                    );
+
+                    if (lockResult.rows.length === 0) {
+                        throw Object.assign(
+                            new Error("Mass request not found"),
+                            { statusCode: 404, code: "MASS_REQUEST_NOT_FOUND" }
+                        );
+                    }
+
+                    const firstItem = lockResult.rows[0];
+
+                    const approvalRow = {
+                        first_item_status: firstItem.status,
+                        first_item_assigned_to: firstItem.assigned_to,
+                        first_item_approval_1_user_id:
+                            firstItem.approval_1_user_id,
+                        first_item_approval_1_status:
+                            firstItem.approval_1_status,
+                        first_item_approval_2_user_id:
+                            firstItem.approval_2_user_id,
+                        first_item_approval_2_status:
+                            firstItem.approval_2_status,
+                        first_item_approval_3_user_id:
+                            firstItem.approval_3_user_id,
+                        first_item_approval_3_status:
+                            firstItem.approval_3_status,
+                    };
+
+                    const activeStage =
+                        resolveMassRequestApprovalStage(approvalRow);
+
+                    if (
+                        String(firstItem.status || "")
+                            .trim()
+                            .toUpperCase() !== "SUBMIT"
+                    ) {
+                        throw Object.assign(
+                            new Error(
+                                "Mass request rework can only be requested while status is Submit"
+                            ),
+                            {
+                                statusCode: 409,
+                                code: "MASS_REQUEST_REWORK_STATUS_CONFLICT",
+                            }
+                        );
+                    }
+
+                    if (!activeStage) {
+                        throw Object.assign(
+                            new Error(
+                                "Mass request is already processed or not waiting for approval"
+                            ),
+                            {
+                                statusCode: 409,
+                                code: "MASS_REQUEST_REWORK_CONFLICT",
+                            }
+                        );
+                    }
+
+                    if (
+                        !canActorApproveMassRequestStage({
+                            row: approvalRow,
+                            actorUserId,
+                            actorUsername,
+                        })
+                    ) {
+                        throw Object.assign(
+                            new Error(
+                                "Forbidden: only the assigned approver or ADMIN can request rework on this mass request"
+                            ),
+                            {
+                                statusCode: 403,
+                                code: "MASS_REQUEST_REWORK_FORBIDDEN",
+                            }
+                        );
+                    }
+
+                    const patch = buildMassRequestReworkPatch({
+                        activeStage,
+                        actorUserId,
+                        reason,
+                    });
+
+                    const patchEntries = Object.entries(patch).filter(
+                        ([_, v]) => !(v && typeof v === "object" && v.__sql)
+                    );
+                    const setClauses = patchEntries.map(
+                        ([field], i) => `${field} = $${i + 2}`
+                    );
+                    const nowFields = Object.entries(patch).filter(
+                        ([_, v]) => v && typeof v === "object" && v.__sql
+                    );
+                    const nowClauses = nowFields.map(
+                        ([field]) => `${field} = NOW()`
+                    );
+
+                    const allSetClauses = [
+                        ...setClauses,
+                        ...nowClauses,
+                        `updated_at = NOW()`,
+                    ];
+
+                    const updateQuery = `UPDATE mat_mass_request_item
+                        SET ${allSetClauses.join(", ")}
+                        WHERE mass_request_id = $1
+                        RETURNING id`;
+
+                    const updateParams = [
+                        massRequestId,
+                        ...patchEntries.map(([_, v]) => v),
+                    ];
+
+                    const updateResult = await client.query(
+                        updateQuery,
+                        updateParams
+                    );
+
+                    if (updateResult.rowCount === 0) {
+                        throw Object.assign(
+                            new Error(
+                                "Mass request is already processed or not waiting for rework"
+                            ),
+                            {
+                                statusCode: 409,
+                                code: "MASS_REQUEST_REWORK_CONFLICT",
+                            }
+                        );
+                    }
+
+                    await client.query("COMMIT");
+
+                    return {
+                        mass_request_id: Number(massRequestId),
+                        stage: activeStage,
+                        status: patch.status,
+                        assigned_to: patch.assigned_to,
+                        updated_count: updateResult.rowCount,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error requesting mass request rework:", error);
+            throw error;
+        }
+    },
+
+    rejectMassRequestByAdmin: async ({
+        massRequestId,
+        actorUserId,
+        actorUsername,
+        reason,
+    }) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const lockResult = await client.query(
+                        `SELECT i.*
+                         FROM mat_mass_request_item i
+                         WHERE i.mass_request_id = $1
+                         ORDER BY i.item_no ASC
+                         LIMIT 1
+                         FOR UPDATE OF i`,
+                        [massRequestId]
+                    );
+
+                    if (lockResult.rows.length === 0) {
+                        throw Object.assign(
+                            new Error("Mass request not found"),
+                            { statusCode: 404, code: "MASS_REQUEST_NOT_FOUND" }
+                        );
+                    }
+
+                    const firstItem = lockResult.rows[0];
+
+                    const approvalRow = {
+                        first_item_status: firstItem.status,
+                        first_item_assigned_to: firstItem.assigned_to,
+                        first_item_approval_1_user_id:
+                            firstItem.approval_1_user_id,
+                        first_item_approval_1_status:
+                            firstItem.approval_1_status,
+                        first_item_approval_2_user_id:
+                            firstItem.approval_2_user_id,
+                        first_item_approval_2_status:
+                            firstItem.approval_2_status,
+                        first_item_approval_3_user_id:
+                            firstItem.approval_3_user_id,
+                        first_item_approval_3_status:
+                            firstItem.approval_3_status,
+                    };
+
+                    const activeStage =
+                        resolveMassRequestApprovalStage(approvalRow);
+
+                    if (
+                        String(firstItem.status || "")
+                            .trim()
+                            .toUpperCase() !== "SUBMIT"
+                    ) {
+                        throw Object.assign(
+                            new Error(
+                                "Mass request can only be rejected while status is Submit"
+                            ),
+                            {
+                                statusCode: 409,
+                                code: "MASS_REQUEST_REJECT_STATUS_CONFLICT",
+                            }
+                        );
+                    }
+
+                    if (!activeStage) {
+                        throw Object.assign(
+                            new Error(
+                                "Mass request is already processed or not waiting for approval"
+                            ),
+                            {
+                                statusCode: 409,
+                                code: "MASS_REQUEST_REJECT_CONFLICT",
+                            }
+                        );
+                    }
+
+                    if (
+                        !canActorApproveMassRequestStage({
+                            row: approvalRow,
+                            actorUserId,
+                            actorUsername,
+                        })
+                    ) {
+                        throw Object.assign(
+                            new Error(
+                                "Forbidden: only the assigned approver or ADMIN can reject this mass request"
+                            ),
+                            {
+                                statusCode: 403,
+                                code: "MASS_REQUEST_REJECT_FORBIDDEN",
+                            }
+                        );
+                    }
+
+                    const patch = buildMassRequestRejectPatch({
+                        activeStage,
+                        reason,
+                    });
+
+                    const patchEntries = Object.entries(patch).filter(
+                        ([_, v]) => !(v && typeof v === "object" && v.__sql)
+                    );
+                    const setClauses = patchEntries.map(
+                        ([field], i) => `${field} = $${i + 2}`
+                    );
+                    const nowFields = Object.entries(patch).filter(
+                        ([_, v]) => v && typeof v === "object" && v.__sql
+                    );
+                    const nowClauses = nowFields.map(
+                        ([field]) => `${field} = NOW()`
+                    );
+
+                    const allSetClauses = [
+                        ...setClauses,
+                        ...nowClauses,
+                        `updated_at = NOW()`,
+                    ];
+
+                    const updateQuery = `UPDATE mat_mass_request_item
+                        SET ${allSetClauses.join(", ")}
+                        WHERE mass_request_id = $1
+                        RETURNING id`;
+
+                    const updateParams = [
+                        massRequestId,
+                        ...patchEntries.map(([_, v]) => v),
+                    ];
+
+                    const updateResult = await client.query(
+                        updateQuery,
+                        updateParams
+                    );
+
+                    if (updateResult.rowCount === 0) {
+                        throw Object.assign(
+                            new Error(
+                                "Mass request is already processed or not waiting for rejection"
+                            ),
+                            {
+                                statusCode: 409,
+                                code: "MASS_REQUEST_REJECT_CONFLICT",
+                            }
+                        );
+                    }
+
+                    await client.query("COMMIT");
+
+                    return {
+                        mass_request_id: Number(massRequestId),
+                        stage: activeStage,
+                        status: patch.status,
+                        assigned_to: patch.assigned_to,
+                        updated_count: updateResult.rowCount,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error rejecting mass request:", error);
+            throw error;
+        }
+    },
+
+    getMassRequestItems: async massRequestId => {
+        try {
+            return await DBClientWrapper(async client => {
+                const result = await client.query(
+                    `SELECT
+                        i.id,
+                        i.item_no,
+                        i.request_no,
+                        i.ticket_type,
+                        i.material_group,
+                        i.material_sub_group,
+                        i.material_description,
+                        i.base_uom AS uom,
+                        i.plant_code,
+                        i.sloc_code,
+                        i.po_text,
+                        i.spesifikasi_tambahan,
+                        i.status,
+                        i.assigned_to
+                    FROM mat_mass_request_item i
+                    WHERE i.mass_request_id = $1
+                    ORDER BY i.item_no ASC`,
+                    [massRequestId]
+                );
+                return result.rows;
+            });
+        } catch (error) {
+            console.error("Error fetching mass request items:", error);
+            throw error;
+        }
+    },
+
+    /**
+     * Save revised items after a mass request has been reworked by an approver.
+     * Updates item fields, resets the reworked approval stage to WAITING,
+     * and sets status back to Submit for the approver to review again.
+     */
+    saveMassRequestRework: async ({
+        massRequestId,
+        actorUserId,
+        items,
+    }) => {
+        try {
+            return await DBClientWrapper(async client => {
+                await client.query("BEGIN");
+
+                try {
+                    const lockResult = await client.query(
+                        `SELECT i.*
+                         FROM mat_mass_request_item i
+                         WHERE i.mass_request_id = $1
+                         ORDER BY i.item_no ASC
+                         LIMIT 1
+                         FOR UPDATE OF i`,
+                        [massRequestId]
+                    );
+
+                    if (lockResult.rows.length === 0) {
+                        throw Object.assign(
+                            new Error("Mass request not found"),
+                            { statusCode: 404, code: "MASS_REQUEST_NOT_FOUND" }
+                        );
+                    }
+
+                    const firstItem = lockResult.rows[0];
+                    const status = String(firstItem.status || "").trim().toUpperCase();
+
+                    if (status !== "REWORK") {
+                        throw Object.assign(
+                            new Error("Mass request rework can only be saved while status is Rework"),
+                            { statusCode: 409, code: "MASS_REQUEST_REWORK_SAVE_CONFLICT" }
+                        );
+                    }
+
+                    // Determine which approval stage has REWORK status
+                    const reworkStage = String(firstItem.approval_1_status || "").trim().toUpperCase() === "REWORK"
+                        ? 1
+                        : String(firstItem.approval_2_status || "").trim().toUpperCase() === "REWORK"
+                            ? 2
+                            : null;
+
+                    if (!reworkStage) {
+                        throw Object.assign(
+                            new Error("Mass request rework stage is missing"),
+                            { statusCode: 409, code: "MASS_REQUEST_REWORK_STAGE_MISSING" }
+                        );
+                    }
+
+                    const stagePrefix = `approval_${reworkStage}`;
+
+                    // Update each item's editable fields if items are provided
+                    if (Array.isArray(items) && items.length > 0) {
+                        const ALLOWED_FIELDS = [
+                            "material_description",
+                            "base_uom",
+                            "plant_code",
+                            "sloc_code",
+                            "material_group",
+                            "material_sub_group",
+                            "po_text",
+                            "spesifikasi_tambahan",
+                        ];
+
+                        for (const item of items) {
+                            if (!item.id) continue;
+
+                            const edits = {};
+                            for (const field of ALLOWED_FIELDS) {
+                                if (item[field] !== undefined) {
+                                    edits[field] = item[field];
+                                }
+                            }
+                            // Handle uom -> base_uom mapping
+                            if (item.uom !== undefined && edits.base_uom === undefined) {
+                                edits.base_uom = item.uom;
+                            }
+
+                            if (Object.keys(edits).length === 0) continue;
+
+                            const editEntries = Object.entries(edits);
+                            const setClauses = editEntries.map(
+                                ([field], i) => `${field} = $${i + 3}`
+                            );
+                            setClauses.push("updated_at = NOW()");
+
+                            await client.query(
+                                `UPDATE mat_mass_request_item
+                                 SET ${setClauses.join(", ")}
+                                 WHERE id = $1 AND mass_request_id = $2`,
+                                [item.id, massRequestId, ...editEntries.map(([_, v]) => v)]
+                            );
+                        }
+                    }
+
+                    // Reset the reworked approval stage to WAITING and status to Submit
+                    const resetPatch = {};
+                    resetPatch[`${stagePrefix}_status`] = "WAITING";
+                    resetPatch.status = "Submit";
+                    resetPatch.assigned_to = `Approval ${reworkStage}`;
+                    resetPatch.updated_at = new Date();
+
+                    const patchEntries = Object.entries(resetPatch);
+                    const allSetClauses = patchEntries.map(
+                        ([field], i) => `${field} = $${i + 1}`
+                    );
+
+                    const updateQuery = `UPDATE mat_mass_request_item
+                        SET ${allSetClauses.join(", ")}
+                        WHERE mass_request_id = $${patchEntries.length + 1}
+                        RETURNING id`;
+
+                    const updateParams = [
+                        ...patchEntries.map(([_, v]) => v),
+                        massRequestId,
+                    ];
+
+                    await client.query(updateQuery, updateParams);
+
+                    await client.query("COMMIT");
+
+                    return {
+                        mass_request_id: Number(massRequestId),
+                        rework_stage: reworkStage,
+                        status: "Submit",
+                        assigned_to: `Approval ${reworkStage}`,
+                    };
+                } catch (error) {
+                    await client.query("ROLLBACK");
+                    throw error;
+                }
+            });
+        } catch (error) {
+            console.error("Error saving mass request rework:", error);
+            throw error;
+        }
     },
 };
 
