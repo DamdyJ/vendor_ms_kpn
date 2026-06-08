@@ -1200,11 +1200,11 @@ const Ticket = {
 
     async processByLink(token_appr) {
         try {
-            const client = await db.connect();
             /**
              * @type {{emp_role_id : string, bu_id : string, dept_id : string, ticket_id : string}}
              */
             const decoded = jwt.decode(token_appr, process.env.TOKEN_KEY);
+            const client = await db.connect();
             try {
                 await client.query(TRANS.BEGIN);
                 const ApprovalTrack = new ApprovalTracker(
@@ -1292,11 +1292,11 @@ const Ticket = {
 
     async renderRejectForm(token_appr) {
         try {
-            const client = await db.connect();
             /**
              * @type {{emp_role_id : string, bu_id : string, dept_id : string, ticket_id : string}}
              */
             const decoded = jwt.decode(token_appr, process.env.TOKEN_KEY);
+            const client = await db.connect();
             try {
                 const ApprovalTrack = new ApprovalTracker(
                     client,

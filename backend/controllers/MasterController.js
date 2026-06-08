@@ -236,11 +236,11 @@ const MasterController = {
 
     getPurOrg: async (req, res) => {
         try {
-            const client = await db.connect();
             const { limit, offset, company, q } = req.query;
             if (!company) {
                 throw new Error("Provide Company First");
             }
+            const client = await db.connect();
             try {
                 const { rows } = await client.query(
                     `select distinct porg_id from mst_porg mp

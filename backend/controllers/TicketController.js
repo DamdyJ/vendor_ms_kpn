@@ -530,18 +530,20 @@ TicketController.processMgrPrc = async (req, res) => {
 
 TicketController.deleteTicket = async (req, res) => {
     const ticket_id = req.params.ticket_id;
-    const client = await db.connect();
-    await client.query(TRANS.BEGIN);
-    const check = await client.query(
-        `select ticket_id, ven_id from ticket where token = '${ticket_id}'`
-    );
-    const ven_id = check.rows[0].ven_id;
-    if (check.rowCount == 0) {
-        res.status(203).send({
-            message: "ticket not exist",
-        });
-    }
+    let client;
     try {
+        client = await db.connect();
+        await client.query(TRANS.BEGIN);
+        const check = await client.query(
+            `select ticket_id, ven_id from ticket where token = '${ticket_id}'`
+        );
+        if (check.rowCount == 0) {
+            await client.query(TRANS.ROLLBACK);
+            return res.status(203).send({
+                message: "ticket not exist",
+            });
+        }
+        const ven_id = check.rows[0].ven_id;
         const [upque, upval] = crud.updateItem(
             "ticket",
             { is_close: true },
@@ -566,13 +568,13 @@ TicketController.deleteTicket = async (req, res) => {
             data: deletedTicket,
         });
     } catch (error) {
-        await client.query(TRANS.ROLLBACK);
+        if (client) await client.query(TRANS.ROLLBACK);
         console.log(error.message);
         res.status(500).send({
             message: error.message,
         });
     } finally {
-        client.release();
+        if (client) client.release();
     }
 };
 

@@ -24,6 +24,7 @@ const tp = mailer.createTransport({
 const Emailer = {
     toManager: async (ven_name, comp, ticket_id, state, clientpg = null) => {
         let client = clientpg;
+        try {
         if (!client) {
             client = await db.connect();
         }
@@ -191,7 +192,6 @@ const Emailer = {
         const linkapproval = `${hostname}/api/ticket/mgrappr?ticket_id=${ticket_id}&action=accept`;
         const linkreject = `${hostname}/api/ticket/mgrappr?ticket_id=${ticket_id}&action=reject`;
         const transporter = tp;
-        try {
             const setup = {
                 from: process.env.SMTP_USERNAME,
                 to: email_target,

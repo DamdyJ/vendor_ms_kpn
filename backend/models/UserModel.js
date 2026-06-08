@@ -50,9 +50,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
         } else {
             submitState = "insert";
         }
-        const client = await db.connect();
         console.log(params);
-        await client.query(TRANS.BEGIN);
         if (params.hasOwnProperty("password")) {
             pass = await hashPassword(params.password);
         }
@@ -110,15 +108,18 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
             );
         }
 
+        let client;
         try {
+            client = await db.connect();
+            await client.query(TRANS.BEGIN);
             const insertUser = await client.query(query, val);
             await client.query(TRANS.COMMIT);
             return { name: insertUser.rows[0].username };
         } catch (error) {
-            await client.query(TRANS.ROLLBACK);
+            if (client) await client.query(TRANS.ROLLBACK);
             throw error;
         } finally {
-            client.release();
+            if (client) client.release();
         }
     },
 
@@ -226,7 +227,6 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
     },
 
     createManager: async params => {
-        const client = await db.connect();
         const uidExist = params.user_id;
         let pass = "";
         let query, val;
@@ -288,13 +288,15 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                 "username"
             );
         }
+        let client;
         try {
+            client = await db.connect();
             const insertUserMgr = await client.query(query, val);
             return { name: insertUserMgr.rows[0].username };
         } catch (error) {
             throw error.message;
         } finally {
-            client.release();
+            if (client) client.release();
         }
     },
 

@@ -100,8 +100,8 @@ const UserController = {
     },
 
     refreshToken: async (req, res) => {
+        let client;
         try {
-            const client = await db.connect();
             let headers =
                 req.headers.Authorization || req.headers.authorization;
             let token = headers?.split(" ")[1];
@@ -110,53 +110,45 @@ const UserController = {
                     message: "Unauthorized",
                 });
             }
-            let cookies;
-            const result = jwt.verify(token, process.env.TOKEN_KEY, {
+            const cookies = jwt.verify(token, process.env.TOKEN_KEY, {
                 ignoreExpiration: true,
             });
-            cookies = result;
-            try {
-                let refToken_q = "";
-                if (cookies.role == "VENDOR") {
-                    refToken_q = `select token from a_uservendor where user_id = '${cookies.user_id}'`;
-                } else if (cookies.role !== "MGR") {
-                    refToken_q = `select token from mst_user where user_id = '${cookies.user_id}'`;
-                } else {
-                    refToken_q = `select token from mst_mgr where mgr_id = '${cookies.user_id}'`;
-                }
-                const getrefToken = await client.query(refToken_q);
-                const refToken = getrefToken.rows[0].token;
-                const verif = jwt.verify(refToken, process.env.TOKEN_KEY);
-                const newAct = jwt.sign(
-                    {
-                        user_id: cookies.user_id,
-                        username: cookies.username,
-                        role: cookies.role,
-                        emp_role_id: cookies.emp_role_id,
-                        bu_id: cookies.bu_id,
-                        dept_id: cookies.dept_id,
-                    },
-                    process.env.TOKEN_KEY,
-                    {
-                        expiresIn: "15m",
-                    }
-                );
-                res.status(200).send({
-                    accessToken: newAct,
-                });
-            } catch (error) {
-                console.error(error);
-                res.status(401).send({
-                    message: "Login Expired",
-                });
-            } finally {
-                client.release();
+            client = await db.connect();
+            let refToken_q = "";
+            if (cookies.role == "VENDOR") {
+                refToken_q = `select token from a_uservendor where user_id = '${cookies.user_id}'`;
+            } else if (cookies.role !== "MGR") {
+                refToken_q = `select token from mst_user where user_id = '${cookies.user_id}'`;
+            } else {
+                refToken_q = `select token from mst_mgr where mgr_id = '${cookies.user_id}'`;
             }
+            const getrefToken = await client.query(refToken_q);
+            const refToken = getrefToken.rows[0].token;
+            const verif = jwt.verify(refToken, process.env.TOKEN_KEY);
+            const newAct = jwt.sign(
+                {
+                    user_id: cookies.user_id,
+                    username: cookies.username,
+                    role: cookies.role,
+                    emp_role_id: cookies.emp_role_id,
+                    bu_id: cookies.bu_id,
+                    dept_id: cookies.dept_id,
+                },
+                process.env.TOKEN_KEY,
+                {
+                    expiresIn: "30s",
+                }
+            );
+            res.status(200).send({
+                accessToken: newAct,
+            });
         } catch (error) {
             console.error(error);
             res.status(401).send({
                 message: "Login Expired",
             });
+        } finally {
+            if (client) client.release();
         }
     },
 
