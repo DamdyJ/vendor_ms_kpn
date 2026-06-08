@@ -405,6 +405,59 @@ const SINGLE_REQUEST_PUBLIC_DIRECTORY = path.join(
     "backend",
     "public"
 );
+const SINGLE_REQUEST_ATTACHMENT_ROOT = path.posix.join(
+    "attachments",
+    "single-request"
+);
+const MASS_REQUEST_PUBLIC_DIRECTORY = path.join(
+    path.resolve(),
+    "backend",
+    "public"
+);
+const MASS_REQUEST_ATTACHMENT_ROOT = path.posix.join(
+    "attachments",
+    "mass-request"
+);
+const LEGACY_SINGLE_REQUEST_ATTACHMENT_ROOT = "single-request-attachments";
+const LEGACY_MASS_REQUEST_ATTACHMENT_ROOT = "mass-request-attachments";
+const formatAttachmentDateSegment = (date = new Date()) => {
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${date.getFullYear()}-${month}-${day}`;
+};
+const buildSingleRequestRelativePath = ({
+    requestNo,
+    requestId,
+    newName,
+    createdAt = new Date(),
+}) =>
+    path.posix.join(
+        SINGLE_REQUEST_ATTACHMENT_ROOT,
+        formatAttachmentDateSegment(createdAt),
+        String(requestNo ?? requestId),
+        String(newName)
+    );
+const buildMassRequestRelativePath = ({
+    requestNo,
+    requestId,
+    itemId,
+    newName,
+    createdAt = new Date(),
+}) =>
+    requestNo
+        ? path.posix.join(
+              MASS_REQUEST_ATTACHMENT_ROOT,
+              formatAttachmentDateSegment(createdAt),
+              String(requestNo),
+              String(newName)
+          )
+        : path.posix.join(
+              MASS_REQUEST_ATTACHMENT_ROOT,
+              formatAttachmentDateSegment(createdAt),
+              String(requestId),
+              String(itemId),
+              String(newName)
+          );
 const SINGLE_REQUEST_SQL_NOW_EXPRESSION = Object.freeze({ __sql: "NOW()" });
 const SINGLE_REQUEST_MATERIAL_CODE_SQL = `NULLIF(COALESCE(
             r.template_payload #>> '{requestFields,material_number}',
@@ -419,7 +472,6 @@ const isRawSqlExpression = value =>
             !Array.isArray(value) &&
             value.__sql === "NOW()"
     );
-
 const normalizeSingleRequestAttachmentRelativePath = relativePath => {
     const normalized = path.posix
         .normalize(
@@ -430,14 +482,39 @@ const normalizeSingleRequestAttachmentRelativePath = relativePath => {
         .replace(/\\/g, "/")
         .replace(/^\/+/, "");
 
-    if (
-        !normalized.startsWith("single-request-attachments/") ||
-        normalized.includes("../")
-    ) {
+    const isLegacy = normalized.startsWith(
+        `${LEGACY_SINGLE_REQUEST_ATTACHMENT_ROOT}/`
+    );
+    const isNew = normalized.startsWith(`${SINGLE_REQUEST_ATTACHMENT_ROOT}/`);
+    if ((!isLegacy && !isNew) || normalized.includes("../")) {
         throw buildSingleRequestApprovalError(
             "Invalid single request attachment path",
             400,
             "SINGLE_REQUEST_ATTACHMENT_INVALID_PATH"
+        );
+    }
+
+    return normalized;
+};
+const normalizeMassRequestAttachmentRelativePath = relativePath => {
+    const normalized = path.posix
+        .normalize(
+            `/${String(relativePath || "")
+                .replace(/\\/g, "/")
+                .replace(/^\/+/, "")}`
+        )
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "");
+
+    const isLegacy = normalized.startsWith(
+        `${LEGACY_MASS_REQUEST_ATTACHMENT_ROOT}/`
+    );
+    const isNew = normalized.startsWith(`${MASS_REQUEST_ATTACHMENT_ROOT}/`);
+    if ((!isLegacy && !isNew) || normalized.includes("../")) {
+        throw buildSingleRequestApprovalError(
+            "Invalid mass request attachment path",
+            400,
+            "MASS_REQUEST_ATTACHMENT_INVALID_PATH"
         );
     }
 
@@ -462,7 +539,6 @@ const assertSingleRequestAttachmentUpload = attachment => {
             attachment?.path ??
             null
     );
-
     if (!tempPath) {
         throw buildSingleRequestApprovalError(
             "Invalid single request attachment upload",
@@ -723,14 +799,29 @@ const getSingleRequestAttachments = async (client, requestId) => {
     return result.rows;
 };
 
-const insertSingleRequestAttachment = async (client, requestId, attachment) => {
-    const safeRelativePath = normalizeSingleRequestAttachmentRelativePath(
-        attachment.file_path ??
-            attachment.relativePath ??
-            attachment.path ??
-            null
-    );
-
+const insertSingleRequestAttachment = async (
+    client,
+    requestId,
+    requestNo,
+    attachment,
+    createdAt = new Date()
+) => {
+    const newName =
+        attachment.new_name ??
+        attachment.newName ??
+        (() => {
+            throw buildSingleRequestApprovalError(
+                "Invalid single request attachment upload",
+                400,
+                "SINGLE_REQUEST_ATTACHMENT_INVALID_UPLOAD"
+            );
+        })();
+    const safeRelativePath = buildSingleRequestRelativePath({
+        requestNo,
+        requestId,
+        newName,
+        createdAt,
+    });
     await client.query(
         `INSERT INTO mat_single_request_attachment (
             request_id,
@@ -749,19 +840,39 @@ const insertSingleRequestAttachment = async (client, requestId, attachment) => {
             attachment.file_type ??
                 attachment.mimeType ??
                 attachment.type ??
-                null,
+            null,
         ]
     );
 };
 
-const persistSingleRequestAttachmentFiles = attachments => {
+const persistSingleRequestAttachmentFiles = (
+    requestId,
+    requestNo,
+    attachments,
+    createdAt = new Date()
+) => {
     const savedFiles = [];
 
     for (const attachment of attachments) {
-        const safeAttachment = assertSingleRequestAttachmentUpload(attachment);
+        const newName = attachment.new_name ?? attachment.newName;
+        if (!newName) {
+            throw buildSingleRequestApprovalError(
+                "Invalid single request attachment upload",
+                400,
+                "SINGLE_REQUEST_ATTACHMENT_INVALID_UPLOAD"
+            );
+        }
+        const safeRelativePath = normalizeSingleRequestAttachmentRelativePath(
+            buildSingleRequestRelativePath({
+                requestNo,
+                requestId,
+                newName,
+                createdAt,
+            })
+        );
         const finalPath = path.join(
             SINGLE_REQUEST_PUBLIC_DIRECTORY,
-            safeAttachment.relativePath
+            safeRelativePath
         );
         const finalDir = path.dirname(finalPath);
 
@@ -769,11 +880,10 @@ const persistSingleRequestAttachmentFiles = attachments => {
             fs.mkdirSync(finalDir, { recursive: true });
         }
 
-        const rawData = fs.readFileSync(safeAttachment.tempPath);
+        const rawData = fs.readFileSync(attachment.tempPath);
         fs.writeFileSync(finalPath, rawData);
         savedFiles.push(finalPath);
     }
-
     return savedFiles;
 };
 
@@ -1287,7 +1397,8 @@ const buildSingleRequestApprovalInboxQuery = ({
                               includeEditHistory
                                   ? "COALESCE(edit_history_rows.edit_history, '[]'::jsonb) AS edit_history"
                                 : "'[]'::jsonb AS edit_history"
-                        }
+                          },
+                          COALESCE(attachment_rows.attachments, '[]'::jsonb) AS attachments
                       FROM mat_single_request r
                       LEFT JOIN mat_item_group mig ON mig.id = r.material_group_id
                       LEFT JOIN mat_item_sub_group mis ON mis.id = r.material_sub_group_id
@@ -1335,6 +1446,23 @@ const buildSingleRequestApprovalInboxQuery = ({
                     ) edit_history_rows ON TRUE`
                             : ""
                     }
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            COALESCE(
+                                jsonb_agg(
+                                    jsonb_build_object(
+                                        'id', att.id,
+                                        'file_name', att.file_name,
+                                        'file_path', att.file_path,
+                                        'file_type', att.file_type
+                                    )
+                                    ORDER BY att.id
+                                ) FILTER (WHERE att.id IS NOT NULL),
+                                '[]'::jsonb
+                            ) AS attachments
+                        FROM mat_single_request_attachment att
+                        WHERE att.request_id = r.id
+                    ) attachment_rows ON TRUE
                     WHERE (
                         COALESCE(r.approval_1_status, 'WAITING') = 'WAITING'
                         OR (
@@ -1365,6 +1493,110 @@ const GET_SINGLE_REQUEST_APPROVAL_INBOX_PRE_REWORK_LEGACY_QUERY =
         includeEditHistory: false,
         includeReworkFields: false,
     });
+const GET_MASS_REQUESTS_BY_USER_QUERY = `SELECT
+    m.id,
+    m.mass_request_no,
+    m.item_count,
+    m.mass_request_reason,
+    m.created_by,
+    m.created_by_username,
+    TO_CHAR(m.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
+    first_item.material_description AS first_item_material_description,
+    first_item.base_uom AS first_item_uom,
+    first_item.status AS first_item_status,
+    first_item.assigned_to AS first_item_assigned_to,
+    first_item.approval_1_user_id AS first_item_approval_1_user_id,
+    first_item.approval_1_status AS first_item_approval_1_status,
+    TO_CHAR(first_item.approval_1_at, 'YYYY-MM-DD HH24:MI') AS first_item_approval_1_at,
+    first_item.approval_1_remark AS first_item_approval_1_remark,
+    first_item.approval_2_user_id AS first_item_approval_2_user_id,
+    first_item.approval_2_status AS first_item_approval_2_status,
+    TO_CHAR(first_item.approval_2_at, 'YYYY-MM-DD HH24:MI') AS first_item_approval_2_at,
+    first_item.approval_2_remark AS first_item_approval_2_remark,
+    first_item.approval_3_user_id AS first_item_approval_3_user_id,
+    first_item.approval_3_status AS first_item_approval_3_status,
+    TO_CHAR(first_item.approval_3_at, 'YYYY-MM-DD HH24:MI') AS first_item_approval_3_at,
+    first_item.approval_3_remark AS first_item_approval_3_remark,
+    COALESCE(au1.fullname, au1.username, first_item.approval_1_user_id) AS first_item_approval_1_user_name,
+    COALESCE(au2.fullname, au2.username, first_item.approval_2_user_id) AS first_item_approval_2_user_name,
+    COALESCE(au3.fullname, au3.username, first_item.approval_3_user_id) AS first_item_approval_3_user_name
+FROM mat_mass_request m
+LEFT JOIN LATERAL (
+    SELECT
+        i.material_description,
+        i.base_uom,
+        i.status,
+        i.assigned_to,
+        i.approval_1_user_id,
+        i.approval_1_status,
+        i.approval_1_at,
+        i.approval_1_remark,
+        i.approval_2_user_id,
+        i.approval_2_status,
+        i.approval_2_at,
+        i.approval_2_remark,
+        i.approval_3_user_id,
+        i.approval_3_status,
+        i.approval_3_at,
+        i.approval_3_remark
+    FROM mat_mass_request_item i
+    WHERE i.mass_request_id = m.id
+    ORDER BY i.item_no ASC
+    LIMIT 1
+) first_item ON TRUE
+LEFT JOIN mst_user au1 ON au1.user_id = first_item.approval_1_user_id
+LEFT JOIN mst_user au2 ON au2.user_id = first_item.approval_2_user_id
+LEFT JOIN mst_user au3 ON au3.user_id = first_item.approval_3_user_id
+WHERE m.created_by = $1
+ORDER BY m.created_at DESC, m.id DESC`;
+
+const GET_MASS_REQUEST_APPROVAL_INBOX_QUERY = `SELECT
+    m.id,
+    m.mass_request_no,
+    m.item_count,
+    m.mass_request_reason,
+    m.created_by,
+    m.created_by_username,
+    TO_CHAR(m.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
+    first_item.status AS first_item_status,
+    first_item.assigned_to AS first_item_assigned_to,
+    first_item.approval_1_user_id AS first_item_approval_1_user_id,
+    first_item.approval_1_status AS first_item_approval_1_status,
+    TO_CHAR(first_item.approval_1_at, 'YYYY-MM-DD HH24:MI') AS first_item_approval_1_at,
+    first_item.approval_1_remark AS first_item_approval_1_remark,
+    first_item.approval_2_user_id AS first_item_approval_2_user_id,
+    first_item.approval_2_status AS first_item_approval_2_status,
+    TO_CHAR(first_item.approval_2_at, 'YYYY-MM-DD HH24:MI') AS first_item_approval_2_at,
+    first_item.approval_2_remark AS first_item_approval_2_remark,
+    first_item.approval_3_user_id AS first_item_approval_3_user_id,
+    first_item.approval_3_status AS first_item_approval_3_status,
+    TO_CHAR(first_item.approval_3_at, 'YYYY-MM-DD HH24:MI') AS first_item_approval_3_at,
+    first_item.approval_3_remark AS first_item_approval_3_remark,
+    COALESCE(au.fullname, au.username, m.created_by_username) AS first_item_approval_1_user_name
+FROM mat_mass_request m
+LEFT JOIN LATERAL (
+    SELECT
+        i.status,
+        i.assigned_to,
+        i.approval_1_user_id,
+        i.approval_1_status,
+        i.approval_1_at,
+        i.approval_1_remark,
+        i.approval_2_user_id,
+        i.approval_2_status,
+        i.approval_2_at,
+        i.approval_2_remark,
+        i.approval_3_user_id,
+        i.approval_3_status,
+        i.approval_3_at,
+        i.approval_3_remark
+    FROM mat_mass_request_item i
+    WHERE i.mass_request_id = m.id
+    ORDER BY i.item_no ASC
+    LIMIT 1
+) first_item ON TRUE
+LEFT JOIN mst_user au ON au.user_id = first_item.approval_1_user_id
+ORDER BY m.created_at DESC, m.id DESC`;
 
 const isMissingSingleRequestEditHistoryTableError = error =>
     error?.code === "42P01" &&
@@ -5191,7 +5423,27 @@ const Material = {
                         ]
                     );
 
-                    for (const file of attachments) {
+                    const createdAt =
+                        insertResult.rows[0]?.created_at ?? new Date();
+                    const resolvedAttachments = attachments.map(file => ({
+                        tempPath: file.tempPath,
+                        file_name: file.originalName,
+                        file_path: buildSingleRequestRelativePath({
+                            requestNo,
+                            requestId: nextId,
+                            newName: file.newName,
+                            createdAt,
+                        }),
+                        file_type: file.mimeType,
+                    }));
+                    const persistedAttachments = resolvedAttachments.map(
+                        ({ file_name, file_path, file_type }) => ({
+                            file_name,
+                            file_path,
+                            file_type,
+                        })
+                    );
+                    for (const attachment of resolvedAttachments) {
                         await client.query(
                             `INSERT INTO mat_single_request_attachment (
                                 request_id,
@@ -5202,22 +5454,19 @@ const Material = {
                             ) VALUES ($1, $2, $3, $4, NOW())`,
                             [
                                 nextId,
-                                file.originalName,
-                                file.relativePath,
-                                file.mimeType,
+                                attachment.file_name,
+                                attachment.file_path,
+                                attachment.file_type,
                             ]
                         );
                     }
 
-                    const publicDir = path.join(
-                        path.resolve(),
-                        "./backend/public"
-                    );
+                    const publicDir = SINGLE_REQUEST_PUBLIC_DIRECTORY;
 
-                    for (const file of attachments) {
+                    for (const attachment of resolvedAttachments) {
                         const finalPath = path.join(
                             publicDir,
-                            file.relativePath
+                            attachment.file_path
                         );
                         const finalDir = path.dirname(finalPath);
 
@@ -5225,7 +5474,7 @@ const Material = {
                             fs.mkdirSync(finalDir, { recursive: true });
                         }
 
-                        const rawData = fs.readFileSync(file.tempPath);
+                        const rawData = fs.readFileSync(attachment.tempPath);
                         fs.writeFileSync(finalPath, rawData);
                         savedFiles.push(finalPath);
                     }
@@ -5235,11 +5484,7 @@ const Material = {
                     return {
                         ...insertResult.rows[0],
                         material_code: storedMaterialCode,
-                        attachments: attachments.map(file => ({
-                            file_name: file.originalName,
-                            file_path: file.relativePath,
-                            file_type: file.mimeType,
-                        })),
+                        attachments: persistedAttachments,
                         approval: snapshot,
                     };
                 } catch (error) {
@@ -5399,9 +5644,25 @@ const Material = {
                         const itemRow = itemResult.rows[0];
                         const rowAttachments =
                             attachmentsByRow[itemIndex] || [];
+                        const attachmentCreatedAt =
+                            itemRow?.created_at ??
+                            massHeaderResult.rows[0]?.created_at ??
+                            new Date();
+                        const resolvedAttachments = rowAttachments.map(file => ({
+                            tempPath: file.tempPath,
+                            file_name: file.originalName,
+                            file_path: buildMassRequestRelativePath({
+                                requestNo: itemRow?.request_no ?? itemRequestNo,
+                                requestId: nextMassId,
+                                itemId: nextItemId,
+                                newName: file.newName,
+                                createdAt: attachmentCreatedAt,
+                            }),
+                            file_type: file.mimeType,
+                        }));
                         const persistedAttachments = [];
 
-                        for (const file of rowAttachments) {
+                        for (const attachment of resolvedAttachments) {
                             const attachmentResult = await client.query(
                                 `INSERT INTO mat_mass_request_attachment (
                                     item_id,
@@ -5413,9 +5674,9 @@ const Material = {
                                 RETURNING id, file_name, file_path, file_type, created_at`,
                                 [
                                     nextItemId,
-                                    file.originalName,
-                                    file.relativePath,
-                                    file.mimeType,
+                                    attachment.file_name,
+                                    attachment.file_path,
+                                    attachment.file_type,
                                 ]
                             );
                             persistedAttachments.push(
@@ -5423,24 +5684,20 @@ const Material = {
                             );
                         }
 
-                        const publicDir = path.join(
-                            path.resolve(),
-                            "./backend/public"
-                        );
-                        for (const file of rowAttachments) {
+                        const publicDir = MASS_REQUEST_PUBLIC_DIRECTORY;
+                        for (const attachment of resolvedAttachments) {
                             const finalPath = path.join(
                                 publicDir,
-                                file.relativePath
+                                attachment.file_path
                             );
                             const finalDir = path.dirname(finalPath);
                             if (!fs.existsSync(finalDir)) {
                                 fs.mkdirSync(finalDir, { recursive: true });
                             }
-                            const rawData = fs.readFileSync(file.tempPath);
+                            const rawData = fs.readFileSync(attachment.tempPath);
                             fs.writeFileSync(finalPath, rawData);
                             savedFiles.push(finalPath);
                         }
-
                         insertedItems.push({
                             ...itemRow,
                             attachments: persistedAttachments,
@@ -5474,62 +5731,7 @@ const Material = {
         try {
             return await DBClientWrapper(async client => {
                 const result = await client.query(
-                    `SELECT
-                        m.id,
-                        m.mass_request_no,
-                        m.item_count,
-                        m.mass_request_reason,
-                        m.created_by,
-                        m.created_by_username,
-                        TO_CHAR(m.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
-                        first_item.material_description AS first_item_material_description,
-                        first_item.base_uom AS first_item_uom,
-                        first_item.status AS first_item_status,
-                        first_item.assigned_to AS first_item_assigned_to,
-                        first_item.approval_1_user_id AS first_item_approval_1_user_id,
-                        first_item.approval_1_status AS first_item_approval_1_status,
-                        first_item.approval_1_at AS first_item_approval_1_at,
-                        first_item.approval_1_remark AS first_item_approval_1_remark,
-                        first_item.approval_2_user_id AS first_item_approval_2_user_id,
-                        first_item.approval_2_status AS first_item_approval_2_status,
-                        first_item.approval_2_at AS first_item_approval_2_at,
-                        first_item.approval_2_remark AS first_item_approval_2_remark,
-                        first_item.approval_3_user_id AS first_item_approval_3_user_id,
-                        first_item.approval_3_status AS first_item_approval_3_status,
-                        first_item.approval_3_at AS first_item_approval_3_at,
-                        first_item.approval_3_remark AS first_item_approval_3_remark,
-                        COALESCE(au1.fullname, au1.username, first_item.approval_1_user_id) AS first_item_approval_1_user_name,
-                        COALESCE(au2.fullname, au2.username, first_item.approval_2_user_id) AS first_item_approval_2_user_name,
-                        COALESCE(au3.fullname, au3.username, first_item.approval_3_user_id) AS first_item_approval_3_user_name
-                    FROM mat_mass_request m
-                    LEFT JOIN LATERAL (
-                        SELECT
-                            i.material_description,
-                            i.base_uom,
-                            i.status,
-                            i.assigned_to,
-                            i.approval_1_user_id,
-                            i.approval_1_status,
-                            i.approval_1_at,
-                            i.approval_1_remark,
-                            i.approval_2_user_id,
-                            i.approval_2_status,
-                            i.approval_2_at,
-                            i.approval_2_remark,
-                            i.approval_3_user_id,
-                            i.approval_3_status,
-                            i.approval_3_at,
-                            i.approval_3_remark
-                        FROM mat_mass_request_item i
-                        WHERE i.mass_request_id = m.id
-                        ORDER BY i.item_no ASC
-                        LIMIT 1
-                    ) first_item ON TRUE
-                    LEFT JOIN mst_user au1 ON au1.user_id = first_item.approval_1_user_id
-                    LEFT JOIN mst_user au2 ON au2.user_id = first_item.approval_2_user_id
-                    LEFT JOIN mst_user au3 ON au3.user_id = first_item.approval_3_user_id
-                    WHERE m.created_by = $1
-                    ORDER BY m.created_at DESC, m.id DESC`,
+                    GET_MASS_REQUESTS_BY_USER_QUERY,
                     [createdBy]
                 );
 
@@ -5993,17 +6195,26 @@ const Material = {
                                 )
                             );
                         }
-
+                        const attachmentCreatedAt = snapshot.created_at
+                            ? new Date(snapshot.created_at)
+                            : new Date();
                         for (const attachment of newAttachments) {
                             await insertSingleRequestAttachment(
                                 client,
                                 requestId,
-                                attachment
+                                snapshot.request_no,
+                                attachment,
+                                attachmentCreatedAt
                             );
                         }
 
                         savedFiles.push(
-                            ...persistSingleRequestAttachmentFiles(newAttachments)
+                            ...persistSingleRequestAttachmentFiles(
+                                requestId,
+                                snapshot.request_no,
+                                newAttachments,
+                                attachmentCreatedAt
+                            )
                         );
                     }
 
@@ -6293,53 +6504,7 @@ const Material = {
         try {
             return await DBClientWrapper(async client => {
                 const result = await client.query(
-                    `SELECT
-                        m.id,
-                        m.mass_request_no,
-                        m.item_count,
-                        m.mass_request_reason,
-                        m.created_by,
-                        m.created_by_username,
-                        TO_CHAR(m.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
-                        first_item.status AS first_item_status,
-                        first_item.assigned_to AS first_item_assigned_to,
-                        first_item.approval_1_user_id AS first_item_approval_1_user_id,
-                        first_item.approval_1_status AS first_item_approval_1_status,
-                        first_item.approval_1_at AS first_item_approval_1_at,
-                        first_item.approval_1_remark AS first_item_approval_1_remark,
-                        first_item.approval_2_user_id AS first_item_approval_2_user_id,
-                        first_item.approval_2_status AS first_item_approval_2_status,
-                        first_item.approval_2_at AS first_item_approval_2_at,
-                        first_item.approval_2_remark AS first_item_approval_2_remark,
-                        first_item.approval_3_user_id AS first_item_approval_3_user_id,
-                        first_item.approval_3_status AS first_item_approval_3_status,
-                        first_item.approval_3_at AS first_item_approval_3_at,
-                        first_item.approval_3_remark AS first_item_approval_3_remark,
-                        COALESCE(au.fullname, au.username, m.created_by_username) AS first_item_approval_1_user_name
-                    FROM mat_mass_request m
-                    LEFT JOIN LATERAL (
-                        SELECT
-                            i.status,
-                            i.assigned_to,
-                            i.approval_1_user_id,
-                            i.approval_1_status,
-                            i.approval_1_at,
-                            i.approval_1_remark,
-                            i.approval_2_user_id,
-                            i.approval_2_status,
-                            i.approval_2_at,
-                            i.approval_2_remark,
-                            i.approval_3_user_id,
-                            i.approval_3_status,
-                            i.approval_3_at,
-                            i.approval_3_remark
-                        FROM mat_mass_request_item i
-                        WHERE i.mass_request_id = m.id
-                        ORDER BY i.item_no ASC
-                        LIMIT 1
-                    ) first_item ON TRUE
-                    LEFT JOIN mst_user au ON au.user_id = first_item.approval_1_user_id
-                    ORDER BY m.created_at DESC, m.id DESC`
+                    GET_MASS_REQUEST_APPROVAL_INBOX_QUERY
                 );
 
                 return filterMassRequestApprovalInboxRows(result.rows, {
@@ -7009,11 +7174,16 @@ const Material = {
                     }
 
                     // Determine which approval stage has REWORK status
-                    const reworkStage = String(firstItem.approval_1_status || "").trim().toUpperCase() === "REWORK"
+                    const approval1Status = String(firstItem.approval_1_status || "").trim().toUpperCase();
+                    const approval2Status = String(firstItem.approval_2_status || "").trim().toUpperCase();
+                    const approval3Status = String(firstItem.approval_3_status || "").trim().toUpperCase();
+                    const reworkStage = approval1Status === "REWORK"
                         ? 1
-                        : String(firstItem.approval_2_status || "").trim().toUpperCase() === "REWORK"
+                        : approval2Status === "REWORK"
                             ? 2
-                            : null;
+                            : approval3Status === "REWORK"
+                                ? 3
+                                : null;
 
                     if (!reworkStage) {
                         throw Object.assign(
@@ -7148,14 +7318,23 @@ Material.__private = {
     GET_SINGLE_REQUEST_APPROVAL_INBOX_PRE_REWORK_QUERY,
     GET_SINGLE_REQUEST_APPROVAL_INBOX_PRE_REWORK_LEGACY_QUERY,
     assertSingleRequestAssignableStatus,
-    buildSingleRequestApproverAssignmentPatch,
     updateSingleRequestColumns,
     normalizeSingleRequestAttachmentRelativePath,
+    normalizeMassRequestAttachmentRelativePath,
+    buildSingleRequestRelativePath,
+    buildMassRequestRelativePath,
+    formatAttachmentDateSegment,
     prepareSingleRequestApprovalEditPatch,
     buildSingleRequestRejectPatch,
     LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
     isMissingSingleRequestEditHistoryTableError,
     isMissingSingleRequestReworkColumnsError,
+    GET_MASS_REQUESTS_BY_USER_QUERY,
+    GET_MASS_REQUEST_APPROVAL_INBOX_QUERY,
+    SINGLE_REQUEST_ATTACHMENT_ROOT,
+    MASS_REQUEST_ATTACHMENT_ROOT,
+    LEGACY_SINGLE_REQUEST_ATTACHMENT_ROOT,
+    LEGACY_MASS_REQUEST_ATTACHMENT_ROOT,
 };
 
 module.exports = Material;

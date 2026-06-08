@@ -23,12 +23,12 @@ const SINGLE_REQUEST_FILE_EXTENSIONS = [
 ];
 const MAX_SINGLE_REQUEST_ATTACHMENTS = 3;
 
-const resolveMaterialFilePath = filename => {
-    const normalizedFilename = String(filename || "").replace(/\\/g, "/");
+const resolveMaterialFilePath = subPath => {
+    const normalizedSubPath = String(subPath || "").replace(/\\/g, "/");
 
     return MATERIAL_FILE_DIRECTORIES.map(directory => {
         const absoluteDirectory = path.resolve(directory);
-        const candidatePath = path.resolve(absoluteDirectory, normalizedFilename);
+        const candidatePath = path.resolve(absoluteDirectory, normalizedSubPath);
         const directoryPrefix = `${absoluteDirectory}${path.sep}`;
 
         if (
@@ -325,14 +325,7 @@ const parseAttachmentInstructions = value => {
     return parsed;
 };
 
-const buildSingleRequestAttachmentDescriptors = ({
-    files = [],
-    materialGroupCode,
-    subgroupCode,
-}) => {
-    const safeMaterialGroupCode = sanitizePathSegment(materialGroupCode);
-    const safeSubgroupCode = sanitizePathSegment(subgroupCode);
-
+const buildSingleRequestAttachmentDescriptors = ({ files = [] } = {}) => {
     return files.map(file => {
         const originalFilename = file.originalFilename || file.newFilename;
         const { extension, safeOriginalName, safeBaseName } =
@@ -349,18 +342,11 @@ const buildSingleRequestAttachmentDescriptors = ({
 
         const timestamp = Date.now().toString();
         const newName = `${timestamp}_${safeBaseName}.${extension}`;
-        const relativePath = path.posix.join(
-            "single-request-attachments",
-            safeMaterialGroupCode,
-            safeSubgroupCode,
-            newName
-        );
 
         return {
             tempPath: file.filepath,
             originalName: safeOriginalName,
             newName,
-            relativePath,
             extension,
             mimeType: getMimeType(extension),
         };
@@ -599,6 +585,42 @@ const validateMassRequestBatch = ({ rows, files, fileRowIndexes }) => {
 
     return { errors, filledRowIndexes };
 };
+const buildMassRequestAttachmentDescriptor = ({
+    file,
+    row,
+}) => {
+    const originalFilename =
+        file.originalFilename || file.newFilename || "attachment";
+    const { extension, safeOriginalName, safeBaseName } =
+        sanitizeUploadName(originalFilename);
+
+    if (!MASS_REQUEST_FILE_EXTENSIONS.includes(extension)) {
+        const error = new Error(
+            "Invalid file format. Please upload files with valid extensions: " +
+                MASS_REQUEST_FILE_EXTENSIONS.join(", ")
+        );
+        error.statusCode = 400;
+        throw error;
+    }
+
+    const safeRowMaterialGroup = sanitizePathSegment(row?.materialGroup);
+    const safeRowSubgroup = sanitizePathSegment(row?.materialSubGroup);
+    const timestamp = Date.now().toString();
+    const newName = `${timestamp}_${safeBaseName}.${extension}`;
+
+    return {
+        tempPath: file.filepath,
+        originalName: safeOriginalName,
+        newName,
+        extension,
+        mimeType: getMimeType(extension),
+        // Kept for legacy callers / audit trails. The model recomposes the
+        // final relative path using the persisted request id + item id, so
+        // these values are not used for storage.
+        legacyGroup: safeRowMaterialGroup,
+        legacySubgroup: safeRowSubgroup,
+    };
+};
 
 const buildMassRequestAttachmentsByRow = ({ rows, files, fileRowIndexes }) => {
     const result = Array.from({ length: MASS_MAX_ROWS }, () => []);
@@ -620,40 +642,10 @@ const buildMassRequestAttachmentsByRow = ({ rows, files, fileRowIndexes }) => {
             throw error;
         }
 
-        const originalFilename =
-            file.originalFilename || file.newFilename || "attachment";
-        const { extension, safeOriginalName, safeBaseName } =
-            sanitizeUploadName(originalFilename);
-
-        if (!MASS_REQUEST_FILE_EXTENSIONS.includes(extension)) {
-            const error = new Error(
-                "Invalid file format. Please upload files with valid extensions: " +
-                    MASS_REQUEST_FILE_EXTENSIONS.join(", ")
-            );
-            error.statusCode = 400;
-            throw error;
-        }
-
         const row = rows[rowIndex] || createEmptyMassRequestRow();
-        const safeMaterialGroupCode = sanitizePathSegment(row.materialGroup);
-        const safeSubgroupCode = sanitizePathSegment(row.materialSubGroup);
-        const timestamp = Date.now().toString();
-        const newName = `${timestamp}_${safeBaseName}.${extension}`;
-        const relativePath = path.posix.join(
-            "mass-request-attachments",
-            safeMaterialGroupCode,
-            safeSubgroupCode,
-            newName
+        result[rowIndex].push(
+            buildMassRequestAttachmentDescriptor({ file, row })
         );
-
-        result[rowIndex].push({
-            tempPath: file.filepath,
-            originalName: safeOriginalName,
-            newName,
-            relativePath,
-            extension,
-            mimeType: getMimeType(extension),
-        });
     }
 
     return result;
@@ -1584,8 +1576,18 @@ const MaterialController = {
     // Serve file from public directory
     serveFile: async (req, res) => {
         try {
-            const filename = req.params.filename;
-            const filepath = resolveMaterialFilePath(filename);
+            // With route "/file*", req.params[0] captures everything after "/file"
+            // (e.g. "/attachments/single-request/..."). Strip the leading "/".
+            const rawSubPath =
+                typeof req.params[0] === "string"
+                    ? req.params[0]
+                    : Array.isArray(req.params.subPath)
+                      ? req.params.subPath.join("/")
+                      : typeof req.params.subPath === "string"
+                        ? req.params.subPath
+                        : "";
+            const subPath = rawSubPath.replace(/^\/+/, "");
+            const filepath = resolveMaterialFilePath(subPath);
 
             // Check if file exists
             if (!filepath) {
@@ -1599,7 +1601,7 @@ const MaterialController = {
             const stats = fs.statSync(filepath);
 
             // Determine content type based on file extension
-            const ext = path.extname(filename).toLowerCase();
+            const ext = path.extname(subPath).toLowerCase();
             let contentType = "application/octet-stream";
 
             switch (ext) {
@@ -1622,12 +1624,14 @@ const MaterialController = {
                     break;
             }
 
-            // Set appropriate headers
+            // Set appropriate headers (use only the basename for the
+            // Content-Disposition filename to avoid leaking folder names).
+            const basename = path.basename(subPath);
             res.setHeader("Content-Type", contentType);
             res.setHeader("Content-Length", stats.size);
             res.setHeader(
                 "Content-Disposition",
-                `inline; filename="${filename}"`
+                `inline; filename="${basename}"`
             );
 
             // Stream the file
@@ -2097,43 +2101,8 @@ const MaterialController = {
                 });
             }
 
-            const safeMaterialGroupCode =
-                sanitizePathSegment(materialGroup.code);
-            const safeSubgroupCode = sanitizePathSegment(
-                subgroup.subgroup_code
-            );
-            const attachments = files.map(file => {
-                const originalFilename =
-                    file.originalFilename || file.newFilename;
-                const { extension, safeOriginalName, safeBaseName } =
-                    sanitizeUploadName(originalFilename);
-
-                if (!SINGLE_REQUEST_FILE_EXTENSIONS.includes(extension)) {
-                    const error = new Error(
-                        "Invalid file format. Please upload files with valid extensions: " +
-                            SINGLE_REQUEST_FILE_EXTENSIONS.join(", ")
-                    );
-                    error.statusCode = 400;
-                    throw error;
-                }
-
-                const timestamp = Date.now().toString();
-                const newName = `${timestamp}_${safeBaseName}.${extension}`;
-                const relativePath = path.posix.join(
-                    "single-request-attachments",
-                    safeMaterialGroupCode,
-                    safeSubgroupCode,
-                    newName
-                );
-
-                return {
-                    tempPath: file.filepath,
-                    originalName: safeOriginalName,
-                    newName,
-                    relativePath,
-                    extension,
-                    mimeType: getMimeType(extension),
-                };
+            const attachments = buildSingleRequestAttachmentDescriptors({
+                files,
             });
 
             const hydratedRequestFields =
@@ -2737,8 +2706,6 @@ const MaterialController = {
                         : undefined,
                     newAttachments: buildSingleRequestAttachmentDescriptors({
                         files,
-                        materialGroupCode: materialGroup.code,
-                        subgroupCode: subgroup.subgroup_code,
                     }),
                 };
             }

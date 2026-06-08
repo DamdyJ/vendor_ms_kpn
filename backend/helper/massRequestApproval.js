@@ -200,8 +200,8 @@ const buildMassRequestApprovePatch = ({
     actorUsername,
     remark,
 } = {}) => {
+    const safeRemark = assertRequiredActionReason(remark, "approve");
     const fieldPrefix = getApprovalStageFieldPrefix(activeStage);
-    const safeRemark = remark ?? null;
 
     let nextStatus;
     let nextAssignment;

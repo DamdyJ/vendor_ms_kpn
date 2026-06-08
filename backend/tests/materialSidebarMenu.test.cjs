@@ -11,7 +11,7 @@ test("buildMaterialSidebarMenu moves My Approval and Administrator under Materia
     ticket: { key: "1", text: "Ticket", children: [] },
     approval: {
       key: "2",
-      text: "Approval",
+      text: "My Approval",
       icon: "Approval",
       children: [{ key: "21", text: "Approval Inbox", url: "/dashboard/approval" }],
     },
@@ -39,13 +39,13 @@ test("buildMaterialSidebarMenu moves My Approval and Administrator under Materia
 
 test("buildMaterialSidebarPermission exposes My Approval from Approval access", () => {
   const permission = {
-    Approval: { create: false, read: true, update: true, delete: false },
+    "My Approval": { create: false, read: true, update: true, delete: false },
     Materials: { create: false, read: true, update: false, delete: false },
   };
 
   const nextPermission = buildMaterialSidebarPermission(permission, "user1");
 
-  assert.deepEqual(nextPermission["My Approval"], permission.Approval);
+  assert.deepEqual(nextPermission["My Approval"], permission["My Approval"]);
   assert.equal(nextPermission.Administrator, undefined);
   assert.deepEqual(nextPermission.Materials, {
     create: false,
@@ -57,12 +57,12 @@ test("buildMaterialSidebarPermission exposes My Approval from Approval access", 
 
 test("buildMaterialSidebarPermission exposes Administrator only for admin username", () => {
   const permission = {
-    Approval: { create: false, read: true, update: true, delete: false },
+    "My Approval": { create: false, read: true, update: true, delete: false },
     Materials: { create: false, read: true, update: false, delete: false },
   };
 
   const nextPermission = buildMaterialSidebarPermission(permission, "ADMIN");
 
-  assert.deepEqual(nextPermission["My Approval"], permission.Approval);
-  assert.deepEqual(nextPermission.Administrator, permission.Approval);
+  assert.deepEqual(nextPermission["My Approval"], permission["My Approval"]);
+  assert.deepEqual(nextPermission.Administrator, permission["My Approval"]);
 });

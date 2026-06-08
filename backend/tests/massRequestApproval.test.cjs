@@ -361,16 +361,27 @@ test("buildMassRequestApprovePatch for Approval 3 completes the batch", () => {
     assert.equal(patch.assigned_to, "Completed");
 });
 
-test("buildMassRequestApprovePatch handles null remark", () => {
+test("buildMassRequestApprovePatch throws on missing remark", () => {
+    assert.throws(
+        () =>
+            buildMassRequestApprovePatch({
+                activeStage: "Approval 1",
+                actorUserId: "APP-01",
+                actorUsername: "user.one",
+                remark: "   ",
+            }),
+        /approve reason is required/i
+    );
+});
+
+test("buildMassRequestApprovePatch trims remark whitespace", () => {
     const patch = buildMassRequestApprovePatch({
         activeStage: "Approval 1",
         actorUserId: "APP-01",
         actorUsername: "user.one",
-        remark: null,
+        remark: "  Looks good  ",
     });
-
-    assert.equal(patch.approval_1_status, "APPROVED");
-    assert.equal(patch.approval_1_remark, null);
+    assert.equal(patch.approval_1_remark, "Looks good");
 });
 
 // ---------------------------------------------------------------------------
@@ -471,6 +482,41 @@ test("getMassRequestApprovalInbox returns data via controller", () => {
     assert.match(source, /cookies/i);
 });
 
+test("getMassRequestApprovalInbox SQL formats first-item approval timestamps", () => {
+    // Approval timestamps must be returned as friendly YYYY-MM-DD HH:MM strings,
+    // matching the single-request inbox format. Without this, the UI surfaces
+    // raw ISO 8601 strings (e.g. "2026-06-05T03:44:39.139Z") that are hard to read.
+    const query = Material.__private.GET_MASS_REQUEST_APPROVAL_INBOX_QUERY;
+    assert.match(
+        query,
+        /TO_CHAR\(first_item\.approval_1_at, 'YYYY-MM-DD HH24:MI'\) AS first_item_approval_1_at/i
+    );
+    assert.match(
+        query,
+        /TO_CHAR\(first_item\.approval_2_at, 'YYYY-MM-DD HH24:MI'\) AS first_item_approval_2_at/i
+    );
+    assert.match(
+        query,
+        /TO_CHAR\(first_item\.approval_3_at, 'YYYY-MM-DD HH24:MI'\) AS first_item_approval_3_at/i
+    );
+});
+
+test("getMassRequestsByUser SQL formats first-item approval timestamps", () => {
+    const query = Material.__private.GET_MASS_REQUESTS_BY_USER_QUERY;
+    assert.match(
+        query,
+        /TO_CHAR\(first_item\.approval_1_at, 'YYYY-MM-DD HH24:MI'\) AS first_item_approval_1_at/i
+    );
+    assert.match(
+        query,
+        /TO_CHAR\(first_item\.approval_2_at, 'YYYY-MM-DD HH24:MI'\) AS first_item_approval_2_at/i
+    );
+    assert.match(
+        query,
+        /TO_CHAR\(first_item\.approval_3_at, 'YYYY-MM-DD HH24:MI'\) AS first_item_approval_3_at/i
+    );
+});
+
 test("approveMassRequest controller reads params and body", () => {
     const source = MaterialController.approveMassRequest.toString();
     assert.match(source, /req\.params\.id/);
@@ -488,4 +534,16 @@ test("rejectMassRequest controller reads params and body", () => {
     const source = MaterialController.rejectMassRequest.toString();
     assert.match(source, /req\.params\.id/);
     assert.match(source, /req\.body/);
+});
+
+test("saveMassRequestRework detects REWORK on approval stage 3", () => {
+    const source = Material.saveMassRequestRework.toString();
+    // Pins fix for the bug where rework requested by the third approval stage
+    // returned "Mass request rework stage is missing" because the resolver
+    // only checked approval_1_status and approval_2_status.
+    assert.match(
+        source,
+        /approval_3_status[\s\S]*=== ?["']REWORK["']/,
+        "saveMassRequestRework must inspect approval_3_status for REWORK"
+    );
 });

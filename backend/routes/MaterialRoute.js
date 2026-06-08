@@ -133,11 +133,12 @@ router.put(
     MaterialController.updateAliases
 );
 
-// Serve attachment file
-router.get("/file/:filename", MaterialController.serveFile);
+// Serve attachment file (catch-all so nested paths like
+// `attachments/single-request/<date>/<id>/<file>` reach the controller intact).
+// Express 4 path-to-regexp: (*) captures everything including nested path segments.
+router.get("/file(*)", MaterialController.serveFile);
 
 // SAP data synchronization endpoint
-router.get("/sync-sap", AuthToken.authSession, MaterialController.syncSAPData);
 
 // Single material request endpoints
 router.get(

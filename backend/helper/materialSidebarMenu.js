@@ -1,4 +1,4 @@
-const APPROVAL_MENU_TEXT = "Approval";
+const APPROVAL_MENU_TEXT = "My Approval";
 const ADMIN_MENU_TEXT = "Administrator";
 const MATERIALS_MENU_TEXT = "Materials";
 const REQUEST_MATERIAL_TEXT = "Request Material";

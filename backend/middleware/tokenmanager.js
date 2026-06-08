@@ -79,8 +79,8 @@ const TokenManager = {
                         message: err.response.data.message,
                     });
                 } else if (err.name == "TokenExpiredError") {
-                    return res.status(403).send({
-                        message: err.message,
+                    return res.status(401).send({
+                        message: "Token expired",
                     });
                 } else {
                     return res.status(500).send({

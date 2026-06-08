@@ -483,7 +483,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                     groupid: resdata.user_group,
                 },
                 process.env.TOKEN_KEY,
-                { expiresIn: "30s" }
+                { expiresIn: "15m" }
             );
             refreshToken = jwt.sign(
                 {
@@ -497,8 +497,7 @@ SELECT us.mgr_id as id, us.fullname, us.username, us.email, sec.user_group_name,
                 },
                 process.env.TOKEN_KEY,
                 {
-                    expiresIn: "6h",
-                }
+                    expiresIn: "7d" }
             );
             await client.query(TRANS.BEGIN);
             transactionStarted = true;

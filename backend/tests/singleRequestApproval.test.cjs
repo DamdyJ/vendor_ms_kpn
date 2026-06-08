@@ -2438,6 +2438,148 @@ test("createSingleRequest stores aligned insert values for Extend and auto-assig
   }
 });
 
+test("createMassRequest stores attachments under item request number path", async () => {
+  const originalConnect = db.connect;
+  const originalExistsSync = require("fs").existsSync;
+  const originalMkdirSync = require("fs").mkdirSync;
+  const originalReadFileSync = require("fs").readFileSync;
+  const originalWriteFileSync = require("fs").writeFileSync;
+  let insertedAttachmentParams = null;
+  const writtenFilePaths = [];
+
+  require("fs").existsSync = () => true;
+  require("fs").mkdirSync = () => {};
+  require("fs").readFileSync = () => Buffer.from("stub");
+  require("fs").writeFileSync = filepath => {
+    writtenFilePaths.push(String(filepath).replace(/\\/g, "/"));
+  };
+
+  db.connect = async () => ({
+    query: async (queryText, params = []) => {
+      if (queryText === "BEGIN" || queryText === "COMMIT" || queryText === "ROLLBACK") {
+        return { rows: [], rowCount: null };
+      }
+
+      if (/nextval\(pg_get_serial_sequence\('mat_mass_request', 'id'\)\)/i.test(queryText)) {
+        return { rows: [{ next_id: 15 }], rowCount: 1 };
+      }
+
+      if (/SELECT approval_1_user_id, approval_2_user_id\s+FROM mat_single_request_approval/i.test(queryText)) {
+        return { rows: [], rowCount: 0 };
+      }
+
+      if (/INSERT INTO mat_mass_request\s*\(/i.test(queryText)) {
+        return {
+          rows: [
+            {
+              id: 15,
+              mass_request_no: "2000000015",
+              item_count: 1,
+              mass_request_reason: "Project",
+              created_by: "REQ-01",
+              created_by_username: "requester.user",
+              created_at: new Date("2026-06-05T09:00:00.000Z"),
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+
+      if (/nextval\(pg_get_serial_sequence\('mat_mass_request_item', 'id'\)\)/i.test(queryText)) {
+        return { rows: [{ next_id: 88 }], rowCount: 1 };
+      }
+
+      if (/INSERT INTO mat_mass_request_item\s*\(/i.test(queryText)) {
+        return {
+          rows: [
+            {
+              id: 88,
+              item_no: 1,
+              request_no: "2000000088",
+              ticket_type: "Create",
+              status: "Submit",
+              assigned_to: "Approval 1",
+              created_by: "REQ-01",
+              created_at: new Date("2026-06-05T09:00:00.000Z"),
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+
+      if (/INSERT INTO mat_mass_request_attachment\s*\(/i.test(queryText)) {
+        insertedAttachmentParams = params;
+        return {
+          rows: [
+            {
+              id: 501,
+              file_name: params[1],
+              file_path: params[2],
+              file_type: params[3],
+              created_at: new Date("2026-06-05T09:00:00.000Z"),
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+
+      throw new Error(`Unexpected query: ${queryText}`);
+    },
+    release: () => {},
+  });
+
+  try {
+    const result = await Material.createMassRequest({
+      rows: [
+        {
+          plant: "P1",
+          sloc: "S1",
+          materialGroup: "CHEM",
+          materialSubGroup: "SUB",
+          description: "Spec sheet",
+          poText: "PO",
+          uom: "EA",
+          spesifikasiTambahan: "Spec",
+        },
+      ],
+      attachmentsByRow: [
+        [
+          {
+            tempPath: "C:\\tmp\\spec.pdf",
+            originalName: "spec.pdf",
+            newName: "1717578000001_spec.pdf",
+            mimeType: "application/pdf",
+          },
+        ],
+      ],
+      createdBy: "REQ-01",
+      createdByUsername: "requester.user",
+      massRequestReason: "Project",
+    });
+
+    assert.deepEqual(insertedAttachmentParams, [
+      88,
+      "spec.pdf",
+      "attachments/mass-request/2026-06-05/2000000088/1717578000001_spec.pdf",
+      "application/pdf",
+    ]);
+    assert.equal(
+      result.items[0].attachments[0].file_path,
+      "attachments/mass-request/2026-06-05/2000000088/1717578000001_spec.pdf"
+    );
+    assert.match(
+      writtenFilePaths[0],
+      /\/attachments\/mass-request\/2026-06-05\/2000000088\/1717578000001_spec\.pdf$/
+    );
+  } finally {
+    db.connect = originalConnect;
+    require("fs").existsSync = originalExistsSync;
+    require("fs").mkdirSync = originalMkdirSync;
+    require("fs").readFileSync = originalReadFileSync;
+    require("fs").writeFileSync = originalWriteFileSync;
+  }
+});
+
 test("material model exposes single request rework and detail methods", () => {
   assert.equal(typeof Material.requestSingleRequestRework, "function");
   assert.equal(typeof Material.saveSingleRequestRework, "function");
@@ -2689,7 +2831,7 @@ test("saveSingleRequestRework keeps requested attachments and appends new upload
   let insertedAttachmentParams = null;
 
   require("fs").existsSync = pathValue =>
-    String(pathValue).includes("single-request-attachments");
+    String(pathValue).includes("single-request");
   require("fs").mkdirSync = () => {};
   require("fs").readFileSync = () => Buffer.from("pdf");
   require("fs").writeFileSync = () => {};
@@ -2825,7 +2967,7 @@ test("saveSingleRequestRework keeps requested attachments and appends new upload
           {
             tempPath: "C:\\tmp\\new-file.pdf",
             originalName: "new-file.pdf",
-            relativePath: "single-request-attachments/CHEM/SUB/new-file.pdf",
+            newName: "1778000000001_new-file.pdf",
             mimeType: "application/pdf",
           },
         ],
@@ -2839,12 +2981,13 @@ test("saveSingleRequestRework keeps requested attachments and appends new upload
     });
     assert.equal(deletedAttachmentParams.length, 1);
     assert.deepEqual(deletedAttachmentParams[0], [77, [11]]);
-    assert.deepEqual(insertedAttachmentParams, [
-      77,
-      "new-file.pdf",
-      "single-request-attachments/CHEM/SUB/new-file.pdf",
-      "application/pdf",
-    ]);
+    assert.equal(insertedAttachmentParams[0], 77);
+    assert.equal(insertedAttachmentParams[1], "new-file.pdf");
+    assert.match(
+      insertedAttachmentParams[2],
+      /^attachments\/single-request\/2026-05-01\/1000000077\/1778000000001_new-file\.pdf$/
+    );
+    assert.equal(insertedAttachmentParams[3], "application/pdf");
     assert.equal(
       queryLog.some(
         entry =>
@@ -3165,8 +3308,8 @@ test("saveSingleRequestRework controller parses multipart keepAttachmentIds and 
     assert.deepEqual(receivedPayload.attachments.keepAttachmentIds, [10]);
     assert.equal(receivedPayload.attachments.newAttachments.length, 1);
     assert.match(
-      receivedPayload.attachments.newAttachments[0].relativePath,
-      /single-request-attachments\/CHEM\/SUB\/.+upload-1\.pdf/i
+      receivedPayload.attachments.newAttachments[0].newName,
+      /^\d+_upload-1\.pdf$/
     );
     assert.deepEqual(unlinked, ["C:\\tmp\\upload-1.pdf"]);
   } finally {
@@ -3264,25 +3407,92 @@ test("saveSingleRequestRework controller forwards JSON Change editedRequest alia
   }
 });
 
-test("attachment path helpers normalize and contain filesystem paths", () => {
+test("attachment path helpers build ticket-based paths and normalize filesystem paths", () => {
+  const createdAt = new Date("2026-06-05T08:00:00.000Z");
+
+  assert.strictEqual(
+    Material.__private.buildSingleRequestRelativePath({
+      requestNo: "1000001287",
+      newName: "1717578000000_file.jpg",
+      createdAt,
+    }),
+    "attachments/single-request/2026-06-05/1000001287/1717578000000_file.jpg"
+  );
+  assert.strictEqual(
+    Material.__private.buildMassRequestRelativePath({
+      requestNo: "2000000041",
+      newName: "1717578000000_spec.pdf",
+      createdAt,
+    }),
+    "attachments/mass-request/2026-06-05/2000000041/1717578000000_spec.pdf"
+  );
   assert.match(
     Material.__private.normalizeSingleRequestAttachmentRelativePath.toString(),
     /path\.posix[\s\S]*\.normalize/
   );
   assert.match(
     Material.__private.normalizeSingleRequestAttachmentRelativePath.toString(),
-    /single-request-attachments\//
+    /LEGACY_SINGLE_REQUEST_ATTACHMENT_ROOT|SINGLE_REQUEST_ATTACHMENT_ROOT/
   );
   assert.match(
     Material.__private.normalizeSingleRequestAttachmentRelativePath.toString(),
     /Invalid single request attachment path/
   );
+  assert.strictEqual(
+    Material.__private.normalizeSingleRequestAttachmentRelativePath(
+      "attachments/single-request/2026-06-05/1000001287/file.jpg"
+    ),
+    "attachments/single-request/2026-06-05/1000001287/file.jpg"
+  );
+  assert.strictEqual(
+    Material.__private.normalizeSingleRequestAttachmentRelativePath(
+      "single-request-attachments/CHEM/SUB/keep.pdf"
+    ),
+    "single-request-attachments/CHEM/SUB/keep.pdf"
+  );
+  assert.match(
+    Material.__private.normalizeMassRequestAttachmentRelativePath.toString(),
+    /LEGACY_MASS_REQUEST_ATTACHMENT_ROOT|MASS_REQUEST_ATTACHMENT_ROOT/
+  );
+  assert.strictEqual(
+    Material.__private.normalizeMassRequestAttachmentRelativePath(
+      "attachments/mass-request/2026-06-05/2000000041/spec.pdf"
+    ),
+    "attachments/mass-request/2026-06-05/2000000041/spec.pdf"
+  );
+  assert.strictEqual(
+    Material.__private.normalizeMassRequestAttachmentRelativePath(
+      "mass-request-attachments/CHEM/SUB/spec.pdf"
+    ),
+    "mass-request-attachments/CHEM/SUB/spec.pdf"
+  );
   assert.throws(
     () =>
       Material.__private.normalizeSingleRequestAttachmentRelativePath(
-        "single-request-attachments/../../secrets.txt"
+        "attachments/single-request/../../secrets.txt"
       ),
     /Invalid single request attachment path/
+  );
+  assert.throws(
+    () =>
+      Material.__private.normalizeMassRequestAttachmentRelativePath(
+        "attachments/mass-request/../../secrets.txt"
+      ),
+    /Invalid mass request attachment path/
+  );
+  assert.throws(
+    () =>
+      Material.__private.normalizeSingleRequestAttachmentRelativePath(
+        "attachments/other/x.txt"
+      ),
+    /Invalid single request attachment path/
+  );
+  assert.throws(
+    () =>
+      Material.__private.normalizeMassRequestAttachmentRelativePath(
+        "attachments/other/x.txt"
+      ),
+    /Invalid mass request attachment path/
   );
 });
 
@@ -3295,6 +3505,6 @@ test("serveFile resolves files inside configured directories only", () => {
     require("path").join(__dirname, "../controllers/MaterialController.js"),
     "utf8"
   );
-  assert.match(controllerSource, /path\.resolve\(absoluteDirectory, normalizedFilename\)/);
+  assert.match(controllerSource, /path\.resolve\(absoluteDirectory, normalizedSubPath\)/);
   assert.match(controllerSource, /candidatePath\.startsWith\(directoryPrefix\)/);
 });
