@@ -136,7 +136,7 @@ const UserController = {
                 },
                 process.env.TOKEN_KEY,
                 {
-                    expiresIn: "30s",
+                    expiresIn: "15m",
                 }
             );
             res.status(200).send({
