@@ -16,6 +16,7 @@ const {
   getApprovalStageFieldPrefix,
   isSingleRequestApprovalInboxEligible,
   assertRequiredActionReason,
+  buildSingleRequestFinalCode,
 } = require("../helper/singleRequestApproval");
 
 test("buildRequesterApprovalMaster returns requester-based master data", () => {
@@ -28,6 +29,7 @@ test("buildRequesterApprovalMaster returns requester-based master data", () => {
     requester_user_id: "USER-BUDI",
     approval_1_user_id: "USER-APPROVER-01",
     approval_2_user_id: "USER-APPROVER-02",
+    approval_3_user_id: null,
     approval_3_type: "SYSTEM",
     approval_3_group: "MDM_MATERIAL",
   });
@@ -110,6 +112,39 @@ test("assertRequiredActionReason rejects blank reason values", () => {
   assert.throws(
     () => assertRequiredActionReason("   ", "rework"),
     /rework reason is required/i
+  );
+});
+
+test("buildSingleRequestFinalCode composes dotted code from group, subgroup, and suffix", () => {
+  assert.equal(
+    buildSingleRequestFinalCode({
+      materialGroupCode: "901",
+      materialSubGroupCode: "031",
+      finalCodeSuffix: "123",
+    }),
+    "901.031.123"
+  );
+});
+
+test("buildSingleRequestFinalCode requires exactly three numeric suffix digits", () => {
+  assert.throws(
+    () =>
+      buildSingleRequestFinalCode({
+        materialGroupCode: "901",
+        materialSubGroupCode: "031",
+        finalCodeSuffix: "12A",
+      }),
+    error => {
+      assert.equal(error.statusCode, 400);
+      assert.equal(error.code, "SINGLE_REQUEST_FINAL_CODE_SUFFIX_INVALID");
+      assert.deepEqual(error.errors, [
+        {
+          fieldKey: "finalCodeSuffix",
+          message: "Final code suffix must be exactly 3 digits",
+        },
+      ]);
+      return true;
+    }
   );
 });
 
@@ -216,6 +251,13 @@ test("canActorApproveSingleRequestStage includes approval 3 assignee", () => {
   );
 });
 
+test("create single requests allow assigned Approval 3 to complete approval", () => {
+  assert.deepEqual(
+    Material.__private.getSingleRequestAllowedApprovalStages("Create"),
+    ["Approval 1", "Approval 2", "Approval 3"]
+  );
+});
+
 test("createSingleRequest query includes approval columns on mat_single_request", () => {
   assert.match(Material.__private.CREATE_SINGLE_REQUEST_INSERT_QUERY, /approval_1_user_id/i);
   assert.match(Material.__private.CREATE_SINGLE_REQUEST_INSERT_QUERY, /approval_2_user_id/i);
@@ -292,6 +334,20 @@ test("getSingleRequestApprovalInbox query includes subgroup fields for approval 
   );
 });
 
+test("single request read queries expose final_code for approval and request views", () => {
+  assert.match(Material.__private.GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY, /r\.final_code/i);
+  assert.match(Material.__private.GET_SINGLE_REQUEST_LIST_QUERY, /r\.final_code/i);
+  assert.match(Material.__private.LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY, /r\.final_code/i);
+  assert.match(
+    Material.__private.LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
+    /LEFT JOIN mat_item_sub_group mis ON mis\.id = r\.material_sub_group_id/i
+  );
+  assert.match(
+    Material.__private.LOCKED_SINGLE_REQUEST_APPROVAL_SNAPSHOT_QUERY,
+    /mis\.code AS material_sub_group_code/i
+  );
+});
+
 test("getSingleRequests list query reads approval snapshot from mat_single_request", () => {
   assert.doesNotMatch(Material.__private.GET_SINGLE_REQUEST_LIST_QUERY, /LEFT JOIN mat_single_request_approval a/i);
   assert.match(Material.__private.GET_SINGLE_REQUEST_LIST_QUERY, /r\.approval_1_user_id/i);
@@ -355,6 +411,20 @@ test("migration adds rework fields, check constraint, and comments", () => {
   assert.match(migrationSource, /COMMENT ON COLUMN mat_single_request\.rework_by_user_id/i);
   assert.match(migrationSource, /COMMENT ON COLUMN mat_single_request\.rework_at/i);
   assert.match(migrationSource, /COMMENT ON COLUMN mat_single_request\.rework_reason/i);
+});
+
+test("migration adds nullable final_code to mat_single_request", () => {
+  const migrationSource = require("fs").readFileSync(
+    require("path").join(
+      __dirname,
+      "../migration/20260608_add_mat_single_request_final_code.sql"
+    ),
+    "utf8"
+  );
+
+  assert.match(migrationSource, /ALTER TABLE public\.mat_single_request/i);
+  assert.match(migrationSource, /ADD COLUMN IF NOT EXISTS final_code varchar\(11\) NULL/i);
+  assert.match(migrationSource, /COMMENT ON COLUMN public\.mat_single_request\.final_code/i);
 });
 
 test("getSingleRequests list query reads group code through the id join", () => {
@@ -470,6 +540,93 @@ test("approval action workflow applies Change updates to mat_sap_data and valida
   assert.match(source, /Done|Completed/);
 });
 
+test("approval action workflow accepts finalCodeSuffix and stores final_code at Approval 3", () => {
+  const source = Material.approveSingleRequestByAdmin.toString();
+  assert.match(source, /finalCodeSuffix/);
+  assert.match(source, /buildSingleRequestFinalCode/);
+  assert.match(source, /final_code/);
+});
+
+test("approveSingleRequestByAdmin stores composed final_code on Approval 3", async () => {
+  const originalConnect = db.connect;
+  let finalUpdateParams = null;
+
+  db.connect = async () => ({
+    query: async (queryText, params = []) => {
+      if (queryText === "BEGIN" || queryText === "COMMIT" || queryText === "ROLLBACK") {
+        return { rows: [], rowCount: null };
+      }
+
+      if (/FOR UPDATE OF r/.test(queryText)) {
+        return {
+          rows: [
+            {
+              request_id: 77,
+              request_no: "1000000077",
+              assigned_to: "Approval 3",
+              created_by: "REQ-01",
+              created_at: new Date("2026-05-01T08:00:00.000Z"),
+              status: "Submit",
+              ticket_type: "Create",
+              material_group_code: "901",
+              material_sub_group_code: "031",
+              requester_user_id: "REQ-01",
+              approval_1_user_id: "APP-01",
+              approval_1_at: new Date("2026-05-01T09:00:00.000Z"),
+              approval_1_status: "APPROVED",
+              approval_1_remark: "ok",
+              approval_2_user_id: "APP-02",
+              approval_2_at: new Date("2026-05-01T10:00:00.000Z"),
+              approval_2_status: "APPROVED",
+              approval_2_remark: "ok",
+              approval_3_user_id: "APP-03",
+              approval_3_at: null,
+              approval_3_status: "WAITING",
+              approval_3_remark: null,
+              material_group_id: 12,
+              material_sub_group_id: 110,
+              plant_code: "P1",
+              sloc_code: "S1",
+              material_description: "Original desc",
+              base_uom: "EA",
+              template_payload: { requestFields: {}, templateValues: {} },
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+
+      if (/FROM mst_user mu[\s\S]*JOIN mst_page_access/i.test(queryText)) {
+        return { rows: [{ "?column?": 1 }], rowCount: 1 };
+      }
+
+      if (/UPDATE mat_single_request[\s\S]*final_code = \$\d+/i.test(queryText)) {
+        finalUpdateParams = params;
+        return { rows: [], rowCount: 1 };
+      }
+
+      throw new Error(`Unexpected query: ${queryText}`);
+    },
+    release: () => {},
+  });
+
+  try {
+    const result = await Material.approveSingleRequestByAdmin({
+      requestId: 77,
+      actorUserId: "APP-03",
+      actorUsername: "mdm.user",
+      remark: "approved",
+      finalCodeSuffix: "123",
+    });
+
+    assert.ok(finalUpdateParams);
+    assert.equal(finalUpdateParams.includes("901.031.123"), true);
+    assert.equal(result.final_code, "901.031.123");
+  } finally {
+    db.connect = originalConnect;
+  }
+});
+
 test("getSingleRequestApprovalInbox query aggregates edit history from history table", () => {
   assert.match(
     Material.__private.GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY,
@@ -576,6 +733,7 @@ test("createSingleRequest controller accepts JSON Change payloads without multip
   const originalGetMaterialByCode = Material.getMaterialByCode;
   const originalGetGroupById = Material.getGroupById;
   const originalGetSubGroupById = Material.getSubGroupById;
+  const originalHasActiveSingleRequest = Material.hasActiveSingleRequest;
   const originalValidateMaterialRequestTemplate =
     MaterialTemplate.validateMaterialRequestTemplate;
   let receivedPayload = null;
@@ -598,6 +756,7 @@ test("createSingleRequest controller accepts JSON Change payloads without multip
     item_group_id: 21,
     deleted_at: null,
   });
+  Material.hasActiveSingleRequest = async () => false;
   MaterialTemplate.validateMaterialRequestTemplate = async payload => {
     receivedValidationPayload = payload;
     return {
@@ -697,6 +856,7 @@ test("createSingleRequest controller accepts JSON Change payloads without multip
     Material.getMaterialByCode = originalGetMaterialByCode;
     Material.getGroupById = originalGetGroupById;
     Material.getSubGroupById = originalGetSubGroupById;
+    Material.hasActiveSingleRequest = originalHasActiveSingleRequest;
     MaterialTemplate.validateMaterialRequestTemplate =
       originalValidateMaterialRequestTemplate;
   }
@@ -707,6 +867,7 @@ test("createSingleRequest controller allows Change payloads when SAP snapshot ha
   const originalGetMaterialByCode = Material.getMaterialByCode;
   const originalGetGroupById = Material.getGroupById;
   const originalGetSubGroupById = Material.getSubGroupById;
+  const originalHasActiveSingleRequest = Material.hasActiveSingleRequest;
   const originalValidateMaterialRequestTemplate =
     MaterialTemplate.validateMaterialRequestTemplate;
   let receivedPayload = null;
@@ -728,6 +889,7 @@ test("createSingleRequest controller allows Change payloads when SAP snapshot ha
     item_group_id: 21,
     deleted_at: null,
   });
+  Material.hasActiveSingleRequest = async () => false;
   MaterialTemplate.validateMaterialRequestTemplate = async payload => ({
     errors: [
       {
@@ -804,6 +966,7 @@ test("createSingleRequest controller allows Change payloads when SAP snapshot ha
     Material.getMaterialByCode = originalGetMaterialByCode;
     Material.getGroupById = originalGetGroupById;
     Material.getSubGroupById = originalGetSubGroupById;
+    Material.hasActiveSingleRequest = originalHasActiveSingleRequest;
     MaterialTemplate.validateMaterialRequestTemplate =
       originalValidateMaterialRequestTemplate;
   }
@@ -969,6 +1132,50 @@ test("approve controller preserves custom status codes and validation errors", a
         },
       ],
     });
+  } finally {
+    Material.approveSingleRequestByAdmin = originalApprove;
+  }
+});
+
+test("approve controller forwards finalCodeSuffix to approval workflow", async () => {
+  const originalApprove = Material.approveSingleRequestByAdmin;
+  let receivedPayload = null;
+  const req = {
+    params: { id: "77" },
+    cookies: { user_id: "APP-03", username: "mdm.user" },
+    body: {
+      remark: "approved",
+      finalCodeSuffix: "123",
+    },
+  };
+  const response = {
+    statusCode: null,
+    jsonPayload: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      this.jsonPayload = payload;
+      return this;
+    },
+  };
+
+  Material.approveSingleRequestByAdmin = async payload => {
+    receivedPayload = payload;
+    return {
+      request_id: 77,
+      status: "Done",
+      final_code: "901.031.123",
+    };
+  };
+
+  try {
+    await MaterialController.approveSingleRequest(req, response);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(receivedPayload.finalCodeSuffix, "123");
+    assert.equal(response.jsonPayload.data.final_code, "901.031.123");
   } finally {
     Material.approveSingleRequestByAdmin = originalApprove;
   }
@@ -1831,6 +2038,91 @@ test("getSingleRequestsByUser falls back when rework columns are missing", async
   }
 });
 
+test("getSingleRequestsByUser falls back when final_code column is missing", async () => {
+  const originalConnect = db.connect;
+  const queryCalls = [];
+
+  db.connect = async () => ({
+    query: async (queryText, params = []) => {
+      queryCalls.push({ queryText, params });
+
+      if (/r\.final_code/i.test(queryText)) {
+        const error = new Error("column r.final_code does not exist");
+        error.code = "42703";
+        throw error;
+      }
+
+      assert.doesNotMatch(queryText, /r\.final_code/i);
+      assert.match(queryText, /NULL::varchar AS final_code/i);
+      assert.deepEqual(params, ["REQ-01"]);
+
+      return {
+        rows: [
+          {
+            id: 72,
+            requester_user_id: "REQ-01",
+            final_code: null,
+          },
+        ],
+      };
+    },
+    release: () => {},
+  });
+
+  try {
+    const rows = await Material.getSingleRequestsByUser("REQ-01");
+
+    assert.equal(queryCalls.length, 2);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].final_code, null);
+  } finally {
+    db.connect = originalConnect;
+  }
+});
+
+test("getSingleRequestApprovalInbox falls back when final_code column is missing", async () => {
+  const originalConnect = db.connect;
+  const queryCalls = [];
+
+  db.connect = async () => ({
+    query: async queryText => {
+      queryCalls.push(queryText);
+
+      if (/r\.final_code/i.test(queryText)) {
+        const error = new Error("column r.final_code does not exist");
+        error.code = "42703";
+        throw error;
+      }
+
+      assert.doesNotMatch(queryText, /r\.final_code/i);
+      assert.match(queryText, /NULL::varchar AS final_code/i);
+
+      return {
+        rows: [
+          {
+            id: 73,
+            requester_user_id: "REQ-01",
+            final_code: null,
+            approval_1_status: "WAITING",
+            approval_1_user_id: "APP-01",
+          },
+        ],
+      };
+    },
+    release: () => {},
+  });
+
+  try {
+    const rows = await Material.getSingleRequestApprovalInbox("APP-01", "user.one");
+
+    assert.equal(queryCalls.length, 2);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].final_code, null);
+  } finally {
+    db.connect = originalConnect;
+  }
+});
+
 test("approveSingleRequestByAdmin stores original request creator metadata in edit history", async () => {
   const originalConnect = db.connect;
   const originalGetSubGroupById = Material.getSubGroupById;
@@ -1900,7 +2192,7 @@ test("approveSingleRequestByAdmin stores original request creator metadata in ed
         return { rows: [], rowCount: 1 };
       }
 
-      if (/SET approval_1_user_id = \$2,[\s\S]*COALESCE\(approval_1_status, 'WAITING'\) = 'WAITING'/i.test(queryText)) {
+      if (/SET approval_1_user_id = COALESCE\(approval_1_user_id, \$2\),[\s\S]*COALESCE\(approval_1_status, 'WAITING'\) = 'WAITING'/i.test(queryText)) {
         return {
           rows: [
             {
@@ -2068,6 +2360,10 @@ test("approveSingleRequestByAdmin auto-assigns Approval 3 for Change when MDM us
         };
       }
 
+      if (/SELECT approval_3_user_id\s+FROM mat_single_request_approval/i.test(queryText)) {
+        return { rows: [{ approval_3_user_id: "MDM-01" }], rowCount: 1 };
+      }
+
       if (/FROM mst_user mu[\s\S]*JOIN mst_page_access/i.test(queryText)) {
         return {
           rows: [{ user_id: "MDM-01" }],
@@ -2075,7 +2371,7 @@ test("approveSingleRequestByAdmin auto-assigns Approval 3 for Change when MDM us
         };
       }
 
-      if (/UPDATE mat_single_request\s+SET approval_1_user_id = \$2,[\s\S]*approval_3_user_id = \$4,[\s\S]*approval_3_status = 'WAITING'/i.test(queryText)) {
+      if (/UPDATE mat_single_request\s+SET approval_1_user_id = COALESCE\(approval_1_user_id, \$2\),[\s\S]*approval_3_user_id = \$4,[\s\S]*approval_3_status = 'WAITING'/i.test(queryText)) {
         assert.deepEqual(params, [77, "APP-01", "approved", "MDM-01"]);
         return {
           rows: [
@@ -2214,7 +2510,7 @@ test("approveSingleRequestByAdmin skips history insert when edit-history table i
         return { rows: [], rowCount: 1 };
       }
 
-      if (/SET approval_1_user_id = \$2,[\s\S]*COALESCE\(approval_1_status, 'WAITING'\) = 'WAITING'/i.test(queryText)) {
+      if (/SET approval_1_user_id = COALESCE\(approval_1_user_id, \$2\),[\s\S]*COALESCE\(approval_1_status, 'WAITING'\) = 'WAITING'/i.test(queryText)) {
         return {
           rows: [
             {
@@ -2340,8 +2636,8 @@ test("createSingleRequest stores aligned insert values for Extend and auto-assig
         return { rows: [{ next_id: 77 }], rowCount: 1 };
       }
 
-      if (/SELECT approval_1_user_id, approval_2_user_id\s+FROM mat_single_request_approval/i.test(queryText)) {
-        return { rows: [], rowCount: 0 };
+      if (/SELECT approval_1_user_id, approval_2_user_id(?:,\s*approval_3_user_id)?\s+FROM mat_single_request_approval/i.test(queryText)) {
+        return { rows: [{ approval_1_user_id: null, approval_2_user_id: null, approval_3_user_id: "MDM-01" }], rowCount: 1 };
       }
 
       if (/FROM mst_user mu[\s\S]*JOIN mst_page_access/i.test(queryText)) {
@@ -2464,7 +2760,7 @@ test("createMassRequest stores attachments under item request number path", asyn
         return { rows: [{ next_id: 15 }], rowCount: 1 };
       }
 
-      if (/SELECT approval_1_user_id, approval_2_user_id\s+FROM mat_single_request_approval/i.test(queryText)) {
+      if (/SELECT approval_1_user_id, approval_2_user_id, approval_3_user_id\s+FROM mat_single_request_approval/i.test(queryText)) {
         return { rows: [], rowCount: 0 };
       }
 

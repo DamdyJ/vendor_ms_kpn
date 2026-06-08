@@ -145,6 +145,57 @@ const assertRequiredActionReason = (reason, actionLabel = "action") => {
     return String(reason).trim();
 };
 
+const buildFinalCodeValidationError = (message, code, fieldKey) => {
+    const error = new Error(message);
+    error.statusCode = 400;
+    error.code = code;
+    error.errors = [
+        {
+            fieldKey,
+            message,
+        },
+    ];
+    return error;
+};
+
+const normalizeCodeSegment = value => String(value || "").trim();
+
+const buildSingleRequestFinalCode = ({
+    materialGroupCode,
+    materialSubGroupCode,
+    finalCodeSuffix,
+} = {}) => {
+    const groupCode = normalizeCodeSegment(materialGroupCode);
+    const subGroupCode = normalizeCodeSegment(materialSubGroupCode);
+    const suffix = normalizeCodeSegment(finalCodeSuffix);
+
+    if (!/^\d{3}$/.test(groupCode)) {
+        throw buildFinalCodeValidationError(
+            "Material group code must be exactly 3 digits",
+            "SINGLE_REQUEST_FINAL_CODE_GROUP_INVALID",
+            "materialGroupCode"
+        );
+    }
+
+    if (!/^\d{3}$/.test(subGroupCode)) {
+        throw buildFinalCodeValidationError(
+            "Sub material group code must be exactly 3 digits",
+            "SINGLE_REQUEST_FINAL_CODE_SUB_GROUP_INVALID",
+            "materialSubGroupCode"
+        );
+    }
+
+    if (!/^\d{3}$/.test(suffix)) {
+        throw buildFinalCodeValidationError(
+            "Final code suffix must be exactly 3 digits",
+            "SINGLE_REQUEST_FINAL_CODE_SUFFIX_INVALID",
+            "finalCodeSuffix"
+        );
+    }
+
+    return `${groupCode}.${subGroupCode}.${suffix}`;
+};
+
 const getApprovalStageFieldPrefix = stage => {
     if (stage === "Approval 1") {
         return "approval_1";
@@ -288,6 +339,7 @@ const canActorApproveSingleRequestStage = ({
     approval = {},
     actorUserId,
     actorUsername,
+    actorIsMdmMaterial = false,
 } = {}) => {
     if (isAdminMaterialApprover(actorUsername)) {
         return true;
@@ -304,7 +356,10 @@ const canActorApproveSingleRequestStage = ({
     }
 
     if (stage === "Approval 3") {
-        return matchesActorUserId(approval.approval_3_user_id, actorUserId);
+        return (
+            actorIsMdmMaterial ||
+            matchesActorUserId(approval.approval_3_user_id, actorUserId)
+        );
     }
 
     return false;
@@ -409,6 +464,7 @@ const buildRequesterApprovalMaster = ({
     requesterUserId,
     approval1UserId = null,
     approval2UserId = null,
+    approval3UserId = null,
 } = {}) => {
     if (!requesterUserId) {
         throw new Error("requesterUserId is required");
@@ -418,6 +474,7 @@ const buildRequesterApprovalMaster = ({
         requester_user_id: requesterUserId,
         approval_1_user_id: normalizeAssigneeValue(approval1UserId),
         approval_2_user_id: normalizeAssigneeValue(approval2UserId),
+        approval_3_user_id: normalizeAssigneeValue(approval3UserId),
         approval_3_type: "SYSTEM",
         approval_3_group: MDM_MATERIAL_GROUP_NAME,
     };
@@ -513,6 +570,7 @@ const buildAdministratorAssignmentDecision = ({
     usersById = {},
     approval3Candidates = [],
     randomIndex = 0,
+    masterApproval3UserId = null,
 } = {}) => {
     const nextApproval1UserId = Object.prototype.hasOwnProperty.call(
         patch,
@@ -570,7 +628,9 @@ const buildAdministratorAssignmentDecision = ({
         throw new Error("approval 1 and approval 2 must be different");
     }
 
-    let approval3UserId = normalizeAssigneeValue(snapshot.approval_3_user_id);
+    let approval3UserId =
+        normalizeAssigneeValue(masterApproval3UserId) ||
+        normalizeAssigneeValue(snapshot.approval_3_user_id);
     if (
         !approval3UserId &&
         nextApproval1UserId &&
@@ -612,6 +672,7 @@ module.exports = {
     buildAutoAssignedApproval3,
     buildInitialSingleRequestApproval,
     buildRequesterApprovalMaster,
+    buildSingleRequestFinalCode,
     buildSingleRequestRejectPatch,
     buildSingleRequestRevisedPatch,
     buildSingleRequestReworkPatch,

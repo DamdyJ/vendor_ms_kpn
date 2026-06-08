@@ -287,12 +287,10 @@ const buildMassRequestRejectPatch = ({
 };
 
 /**
- * Update approval_1_user_id and/or approval_2_user_id on a single
- * in-flight mass-request item when the administrator retargets the
- * approver master.  Unlike the single-request path this does NOT
- * touch status, assigned_to, or approval_3 — the mass approve flow
- * already picks a fresh MDM_MATERIAL user at the Approval 2 → 3
- * transition and manages its own stage progression.
+ * Update approval_1_user_id, approval_2_user_id, and/or approval_3_user_id
+ * on a single in-flight mass-request item when the administrator retargets the
+ * approver master.  Unlike the single-request path this does NOT touch status
+ * or assigned_to — the mass approve flow manages its own stage progression.
  */
 const syncMassRequestItemApprovalSnapshot = async (
     client,
@@ -312,6 +310,12 @@ const syncMassRequestItemApprovalSnapshot = async (
     if (Object.prototype.hasOwnProperty.call(patch, "approval_2_user_id")) {
         setClauses.push(`approval_2_user_id = $${paramIdx}`);
         params.push(patch.approval_2_user_id ?? null);
+        paramIdx++;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, "approval_3_user_id")) {
+        setClauses.push(`approval_3_user_id = $${paramIdx}`);
+        params.push(patch.approval_3_user_id ?? null);
         paramIdx++;
     }
 

@@ -2793,6 +2793,7 @@ const MaterialController = {
                 actorUsername: req.cookies.username,
                 remark: req.body?.remark ?? null,
                 editedRequest: req.body?.editedRequest ?? null,
+                finalCodeSuffix: req.body?.finalCodeSuffix ?? null,
             });
 
             return res.status(200).json({
