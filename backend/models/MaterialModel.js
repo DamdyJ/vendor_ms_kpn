@@ -1412,12 +1412,18 @@ const buildSingleRequestApprovalInboxQuery = ({
                         r.approval_1_user_id,
                         COALESCE(approval_1_user.fullname, approval_1_user.username, r.approval_1_user_id) AS approval_1_user_name,
                         r.approval_1_status,
+                        TO_CHAR(r.approval_1_at, 'YYYY-MM-DD HH24:MI') AS approval_1_at,
+                        r.approval_1_remark,
                         r.approval_2_user_id,
                           COALESCE(approval_2_user.fullname, approval_2_user.username, r.approval_2_user_id) AS approval_2_user_name,
                           r.approval_2_status,
+                          TO_CHAR(r.approval_2_at, 'YYYY-MM-DD HH24:MI') AS approval_2_at,
+                          r.approval_2_remark,
                           r.approval_3_user_id,
                           COALESCE(approval_3_user.fullname, approval_3_user.username, r.approval_3_user_id) AS approval_3_user_name,
                           r.approval_3_status,
+                          TO_CHAR(r.approval_3_at, 'YYYY-MM-DD HH24:MI') AS approval_3_at,
+                          r.approval_3_remark,
                           ${
                               includeReworkFields
                                   ? SINGLE_REQUEST_REWORK_SELECT_FIELDS
@@ -5332,7 +5338,8 @@ const Material = {
                         }
 
                     const finalCode =
-                        activeStage === "Approval 3"
+                        activeStage === "Approval 3" &&
+                        normalizedTicketType === "Create"
                             ? buildSingleRequestFinalCode({
                                   materialGroupCode:
                                       nextSnapshot.material_group_code,
@@ -5650,7 +5657,7 @@ const Material = {
                             "SELECT nextval(pg_get_serial_sequence('mat_mass_request_item', 'id')) AS next_id"
                         );
                         const itemRequestNo = String(
-                            2000000000 + Number(nextItemId)
+                            3000000000 + Number(nextItemId)
                         );
                         const itemNo = itemIndex + 1;
 

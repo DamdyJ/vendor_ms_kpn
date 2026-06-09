@@ -410,7 +410,7 @@ const withMaterialTemplateAliases = payload => {
 // Mass material request (create) helpers
 // ---------------------------------------------------------------------------
 const MASS_MAX_ROWS = 10;
-const MASS_MIN_ROWS = 1;
+const MASS_MIN_ROWS = 2;
 const MASS_MAX_ATTACHMENTS_PER_ROW = 3;
 const MASS_MIN_ATTACHMENTS_PER_ROW = 1;
 const MASS_REQUEST_FILE_EXTENSIONS = SINGLE_REQUEST_FILE_EXTENSIONS;
@@ -483,6 +483,9 @@ const isMassRequestRowFilled = row =>
 const validateMassRequestRowText = row => {
     const errors = [];
     for (const fieldKey of MASS_REQUEST_TEXT_FIELDS) {
+        if (fieldKey === "poText" || fieldKey === "spesifikasiTambahan") {
+            continue;
+        }
         if (String(row?.[fieldKey] || "").trim() === "") {
             errors.push({
                 fieldKey,
@@ -505,12 +508,8 @@ const fieldKeyToIndonesianMessage = fieldKey => {
             return "Sub material group wajib diisi.";
         case "description":
             return "Material description wajib diisi.";
-        case "poText":
-            return "PO Text wajib diisi.";
         case "uom":
             return "Base UoM wajib diisi.";
-        case "spesifikasiTambahan":
-            return "Spesifikasi tambahan wajib diisi.";
         default:
             return "Field wajib diisi.";
     }
@@ -551,11 +550,11 @@ const validateMassRequestBatch = ({ rows, files, fileRowIndexes }) => {
             errors.push({ rowIndex, ...fieldError });
         }
 
-        if (String(row.description || "").length > 255) {
+        if (String(row.description || "").length > 40) {
             errors.push({
                 rowIndex,
                 fieldKey: "description",
-                message: "Material description maksimal 255 karakter.",
+                message: "Material description maksimal 40 karakter.",
             });
         }
 
@@ -579,7 +578,7 @@ const validateMassRequestBatch = ({ rows, files, fileRowIndexes }) => {
         errors.push({
             rowIndex: -1,
             fieldKey: "rows",
-            message: "Minimal isi 1 baris.",
+            message: "Minimal 2 baris harus diisi.",
         });
     }
 

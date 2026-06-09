@@ -9,7 +9,7 @@ const prodSettings = {
   password: process.env.PGPASSWORD,
   port: process.env.PGPORT,
   database: process.env.PGDATABASE,
-  timezone: "+00:00",
+  timezone: "Asia/Jakarta",
   ssl: {
     rejectUnauthorized: false,
   },
@@ -25,7 +25,7 @@ const devSettings = {
   password: process.env.PGPASSWORD,
   port: process.env.PGPORT,
   database: process.env.PGDATABASE,
-  timezone: "+00:00",
+  timezone: "Asia/Jakarta",
   idleTimeoutMillis: 3000,
   connectionTimeoutMillis: 30000,
   allowExitOnIdle: true,
@@ -38,6 +38,15 @@ const devSettings = {
 const pool = new Pool(
   process.env.NODE_ENV === "production" ? prodSettings : devSettings
 );
+
+// Set PostgreSQL session timezone to WIB (Asia/Jakarta) on every new connection
+pool.on("connect", async (client) => {
+  try {
+    await client.query("SET timezone = 'Asia/Jakarta'");
+  } catch (err) {
+    console.error("Failed to set session timezone:", err && err.message);
+  }
+});
 
 // log unexpected errors on idle clients
 pool.on("error", (err, client) => {
