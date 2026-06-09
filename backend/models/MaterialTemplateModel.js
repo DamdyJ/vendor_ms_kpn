@@ -368,9 +368,26 @@ const MaterialTemplate = {
             }
 
             const safeLimit = Math.min(Number(limit) || 10, 25);
-            const params = materialGroupCode
-                ? [materialGroupCode, `%${normalizedQuery}%`, safeLimit]
-                : [`%${normalizedQuery}%`, safeLimit];
+
+            const wordMatchSubquery = `
+                m.code ILIKE '%' || word || '%'
+                OR m.name ILIKE '%' || word || '%'
+                OR m.description ILIKE '%' || word || '%'
+                OR m.long_text ILIKE '%' || word || '%'
+                OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                OR m.alias1 ILIKE '%' || word || '%'
+                OR m.alias2 ILIKE '%' || word || '%'
+                OR m.alias3 ILIKE '%' || word || '%'
+            `;
+
+            const searchCondition = `
+                EXISTS (
+                    SELECT 1 FROM unnest(string_to_array($search, ' ')) AS word
+                    WHERE ${wordMatchSubquery}
+                )
+            `;
+
+            const params = [normalizedQuery];
 
             const queryText = materialGroupCode
                 ? `
@@ -388,16 +405,12 @@ const MaterialTemplate = {
                     JOIN mat_item_sub_group mis ON mis.id = m.material_sub_group_id
                     JOIN mat_item_group mig ON mig.id = mis.item_group_id
                     WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
-                      AND mig.code = $1
-                      AND (
-                        UPPER(COALESCE(m.code, '')) LIKE $2
-                        OR UPPER(COALESCE(m.name, '')) LIKE $2
-                        OR UPPER(COALESCE(m.description, '')) LIKE $2
-                        OR UPPER(COALESCE(m.alias1, '')) LIKE $2
-                        OR UPPER(COALESCE(m.alias2, '')) LIKE $2
-                        OR UPPER(COALESCE(m.alias3, '')) LIKE $2
-                      )
-                    ORDER BY m.code ASC
+                      AND mig.code = $2
+                      AND ${searchCondition.replace(/\$search/g, '$1')}
+                    ORDER BY
+                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.code ILIKE '%' || word || '%') DESC,
+                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.name ILIKE '%' || word || '%') DESC,
+                        m.code ASC
                     LIMIT $3
                 `
                 : `
@@ -415,17 +428,19 @@ const MaterialTemplate = {
                     JOIN mat_item_sub_group mis ON mis.id = m.material_sub_group_id
                     JOIN mat_item_group mig ON mig.id = mis.item_group_id
                     WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
-                      AND (
-                        UPPER(COALESCE(m.code, '')) LIKE $1
-                        OR UPPER(COALESCE(m.name, '')) LIKE $1
-                        OR UPPER(COALESCE(m.description, '')) LIKE $1
-                        OR UPPER(COALESCE(m.alias1, '')) LIKE $1
-                        OR UPPER(COALESCE(m.alias2, '')) LIKE $1
-                        OR UPPER(COALESCE(m.alias3, '')) LIKE $1
-                      )
-                    ORDER BY m.code ASC
+                      AND ${searchCondition.replace(/\$search/g, '$1')}
+                    ORDER BY
+                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.code ILIKE '%' || word || '%') DESC,
+                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.name ILIKE '%' || word || '%') DESC,
+                        m.code ASC
                     LIMIT $2
                 `;
+
+            if (materialGroupCode) {
+                params.push(materialGroupCode, safeLimit);
+            } else {
+                params.push(safeLimit);
+            }
 
             const result = await client.query(queryText, params);
             return result.rows;

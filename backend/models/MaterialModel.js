@@ -2442,9 +2442,9 @@ const Material = {
 
                 if (searchPattern) {
                     countWhereClause +=
-                        " AND (m.name ILIKE $2 OR m.description ILIKE $2 OR m.code ILIKE $2 OR COALESCE(m.alias1, '') ILIKE $2 OR COALESCE(m.alias2, '') ILIKE $2 OR COALESCE(m.alias3, '') ILIKE $2)";
+                        " AND (m.name ILIKE $2 OR m.description ILIKE $2 OR m.code ILIKE $2 OR COALESCE(m.long_text, '') ILIKE $2 OR COALESCE(m.unit_of_measurement, '') ILIKE $2 OR COALESCE(m.alias1, '') ILIKE $2 OR COALESCE(m.alias2, '') ILIKE $2 OR COALESCE(m.alias3, '') ILIKE $2)";
                     whereClause +=
-                        " AND (m.name ILIKE $4 OR m.description ILIKE $4 OR m.code ILIKE $4 OR COALESCE(m.alias1, '') ILIKE $4 OR COALESCE(m.alias2, '') ILIKE $4 OR COALESCE(m.alias3, '') ILIKE $4)";
+                        " AND (m.name ILIKE $4 OR m.description ILIKE $4 OR m.code ILIKE $4 OR COALESCE(m.long_text, '') ILIKE $4 OR COALESCE(m.unit_of_measurement, '') ILIKE $4 OR COALESCE(m.alias1, '') ILIKE $4 OR COALESCE(m.alias2, '') ILIKE $4 OR COALESCE(m.alias3, '') ILIKE $4)";
                     countParams.push(searchPattern);
                     materialParams.push(searchPattern);
                 }
@@ -2660,9 +2660,23 @@ const Material = {
                     const countRes = await client.query(
                         `SELECT COUNT(*) AS total
                         FROM mat_sap_data m
-                        WHERE (to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                        OR m.code ILIKE $2)`,
-                        [tsQuery, ilikePartial]
+                        WHERE (
+                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                            OR (
+                                SELECT bool_and(
+                                    m.code ILIKE '%' || word || '%'
+                                    OR m.name ILIKE '%' || word || '%'
+                                    OR m.description ILIKE '%' || word || '%'
+                                    OR m.long_text ILIKE '%' || word || '%'
+                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                    OR m.alias1 ILIKE '%' || word || '%'
+                                    OR m.alias2 ILIKE '%' || word || '%'
+                                    OR m.alias3 ILIKE '%' || word || '%'
+                                )
+                                FROM unnest(string_to_array($2, ' ')) AS word
+                            )
+                        )`,
+                        [tsQuery, safeSearchTerm]
                     );
                     totalCount = parseInt(countRes.rows[0].total);
                     const result = await client.query(
@@ -2709,17 +2723,31 @@ const Material = {
                             ) AS rank,
                             CASE
                                 WHEN m.code ILIKE $2 THEN 1
-                                WHEN m.code ILIKE $3 THEN 2
+                                WHEN m.code ILIKE $4 THEN 2
                                 ELSE 3
                             END AS code_match_rank
                         FROM mat_sap_data m
                         JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
                         LEFT JOIN mst_user u ON m.created_by = u.user_id
-                        WHERE (to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                        OR m.code ILIKE $2) ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
-                        LIMIT $4 OFFSET $5`,
-                        [tsQuery, ilikeExact, ilikePartial, pageSize, offset]
+                        WHERE (
+                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                            OR (
+                                SELECT bool_and(
+                                    m.code ILIKE '%' || word || '%'
+                                    OR m.name ILIKE '%' || word || '%'
+                                    OR m.description ILIKE '%' || word || '%'
+                                    OR m.long_text ILIKE '%' || word || '%'
+                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                    OR m.alias1 ILIKE '%' || word || '%'
+                                    OR m.alias2 ILIKE '%' || word || '%'
+                                    OR m.alias3 ILIKE '%' || word || '%'
+                                )
+                                FROM unnest(string_to_array($3, ' ')) AS word
+                            )
+                        ) ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
+                        LIMIT $5 OFFSET $6`,
+                        [tsQuery, ilikeExact, safeSearchTerm, ilikePartial, pageSize, offset]
                     );
                     materialsQueryResult = result.rows;
                 } else {
@@ -2841,6 +2869,9 @@ const Material = {
                 const tsQuery = toTsQuery(safeSearchTerm);
                 const ilikeExact = safeSearchTerm;
                 const ilikePartial = `%${safeSearchTerm}%`;
+                const searchTermForTrgm = safeSearchTerm;
+                const wordSearchEnabled = safeSearchTerm.split(/\s+/).filter(Boolean).length > 0;
+                const searchWordArray = wordSearchEnabled ? safeSearchTerm.split(/\s+/).filter(Boolean) : [];
                 let totalCount = 0;
                 let materialsQueryResult = [];
                 if (isSearch) {
@@ -2850,12 +2881,26 @@ const Material = {
                         JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
                         WHERE (m.dffromclient IS NULL OR dffromclient = false)
-                        AND (to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                        OR m.code ILIKE $2)
+                        AND (
+                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                            OR (
+                                SELECT bool_and(
+                                    m.code ILIKE '%' || word || '%'
+                                    OR m.name ILIKE '%' || word || '%'
+                                    OR m.description ILIKE '%' || word || '%'
+                                    OR m.long_text ILIKE '%' || word || '%'
+                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                    OR m.alias1 ILIKE '%' || word || '%'
+                                    OR m.alias2 ILIKE '%' || word || '%'
+                                    OR m.alias3 ILIKE '%' || word || '%'
+                                )
+                                FROM unnest(string_to_array($2, ' ')) AS word
+                            )
+                        )
                         ${groupId ? " AND mig.id = $3" : ""}`,
                         groupId
-                            ? [tsQuery, ilikePartial, groupId]
-                            : [tsQuery, ilikePartial]
+                            ? [tsQuery, searchTermForTrgm, groupId]
+                            : [tsQuery, searchTermForTrgm]
                     );
                     totalCount = parseInt(countRes.rows[0].total);
                     const result = await client.query(
@@ -2904,7 +2949,7 @@ const Material = {
                             ) AS rank,
                             CASE
                                 WHEN m.code ILIKE $2 THEN 1
-                                WHEN m.code ILIKE $3 THEN 2
+                                WHEN m.code ILIKE $4 THEN 2
                                 ELSE 3
                             END AS code_match_rank
                         FROM mat_sap_data m
@@ -2912,15 +2957,30 @@ const Material = {
                         JOIN mat_item_group mig ON mis.item_group_id = mig.id
                         LEFT JOIN mst_user u ON m.created_by = u.user_id
                         WHERE (m.dffromclient IS NULL OR dffromclient = false)
-                        AND (to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                        OR m.code ILIKE $2) 
-                        ${groupId ? " AND mig.id = $6" : ""}
+                        AND (
+                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                            OR (
+                                SELECT bool_and(
+                                    m.code ILIKE '%' || word || '%'
+                                    OR m.name ILIKE '%' || word || '%'
+                                    OR m.description ILIKE '%' || word || '%'
+                                    OR m.long_text ILIKE '%' || word || '%'
+                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                    OR m.alias1 ILIKE '%' || word || '%'
+                                    OR m.alias2 ILIKE '%' || word || '%'
+                                    OR m.alias3 ILIKE '%' || word || '%'
+                                )
+                                FROM unnest(string_to_array($3, ' ')) AS word
+                            )
+                        )
+                        ${groupId ? " AND mig.id = $7" : ""}
                         ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
-                        LIMIT $4 OFFSET $5`,
+                        LIMIT $5 OFFSET $6`,
                         groupId
                             ? [
                                   tsQuery,
                                   ilikeExact,
+                                  searchTermForTrgm,
                                   ilikePartial,
                                   pageSize,
                                   offset,
@@ -2929,6 +2989,7 @@ const Material = {
                             : [
                                   tsQuery,
                                   ilikeExact,
+                                  searchTermForTrgm,
                                   ilikePartial,
                                   pageSize,
                                   offset,
@@ -3035,22 +3096,32 @@ const Material = {
                 if (safeSearchTerm.length < 2) return [];
 
                 const safeLimit = Math.min(Number(limit) || 10, 25);
-                const ilikeQuery = `%${safeSearchTerm}%`;
+                const searchTermForTrgm = safeSearchTerm;
 
                 let whereClause =
                     "(m.dffromclient IS NULL OR m.dffromclient = false)";
-                const params = [ilikeQuery];
+
+                const params = [searchTermForTrgm];
+                let paramIdx = 1;
+
+                const wordMatchClause = `(
+                    m.code ILIKE '%' || word || '%'
+                    OR m.name ILIKE '%' || word || '%'
+                    OR m.description ILIKE '%' || word || '%'
+                    OR m.long_text ILIKE '%' || word || '%'
+                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                    OR m.alias1 ILIKE '%' || word || '%'
+                    OR m.alias2 ILIKE '%' || word || '%'
+                    OR m.alias3 ILIKE '%' || word || '%'
+                )`;
 
                 whereClause += ` AND (
-                     m.code ILIKE $1 
-                     OR m.name ILIKE $1 
-                     OR m.description ILIKE $1 
-                     OR m.long_text ILIKE $1
-                     OR COALESCE(m.unit_of_measurement, '') ILIKE $1
-                     OR m.alias1 ILIKE $1 
-                     OR m.alias2 ILIKE $1 
-                     OR m.alias3 ILIKE $1
-                 )`;
+                    EXISTS (
+                        SELECT 1 FROM unnest(string_to_array($${paramIdx}, ' ')) AS word
+                        WHERE ${wordMatchClause}
+                    )
+                )`;
+                paramIdx++;
 
                 if (materialGroupCode) {
                     whereClause += " AND mig.code = $2";
@@ -3077,7 +3148,11 @@ const Material = {
                     LEFT JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                     LEFT JOIN mat_item_group mig ON mis.item_group_id = mig.id
                     WHERE ${whereClause}
-                    ORDER BY m.code ASC
+                    ORDER BY
+                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.code ILIKE '%' || word || '%') DESC,
+                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.name ILIKE '%' || word || '%') DESC,
+                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.description ILIKE '%' || word || '%') DESC,
+                        m.code ASC
                     LIMIT $${params.length + 1}
                 `;
 
@@ -4073,7 +4148,6 @@ const Material = {
                 let groupCode = null;
                 let subGroupCode = null;
                 if (searchTerm && searchTerm.trim() !== "") {
-                    // Use the same logic as searchMaterials, but fetch all (no LIMIT)
                     const safeSearchTerm = String(searchTerm || "").trim();
                     const toTsQuery = input =>
                         input
@@ -4082,8 +4156,6 @@ const Material = {
                             .map(word => `${word}:*`)
                             .join(" & ");
                     const tsQuery = toTsQuery(safeSearchTerm);
-                    const ilikeExact = safeSearchTerm;
-                    const ilikePartial = `%${safeSearchTerm}%`;
                     const result = await client.query(
                         `SELECT
                             m.id,
@@ -4124,10 +4196,22 @@ const Material = {
                         WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
                         AND (
                             to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                            OR m.code ILIKE $2
+                            OR (
+                                SELECT bool_and(
+                                    m.code ILIKE '%' || word || '%'
+                                    OR m.name ILIKE '%' || word || '%'
+                                    OR m.description ILIKE '%' || word || '%'
+                                    OR m.long_text ILIKE '%' || word || '%'
+                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                    OR m.alias1 ILIKE '%' || word || '%'
+                                    OR m.alias2 ILIKE '%' || word || '%'
+                                    OR m.alias3 ILIKE '%' || word || '%'
+                                )
+                                FROM unnest(string_to_array($2, ' ')) AS word
+                            )
                         )
                         ORDER BY m.code ASC, m.name ASC`,
-                        [tsQuery, ilikePartial]
+                        [tsQuery, safeSearchTerm]
                     );
                     materialsQueryResult = result.rows;
                 } else {
