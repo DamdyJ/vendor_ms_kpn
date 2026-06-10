@@ -3131,6 +3131,15 @@ const MaterialController = {
             });
         }
     },
+
+    getUomMaster: async (req, res) => {
+        try {
+            const uomList = await Material.getUomMaster();
+            res.status(200).json({ success: true, data: uomList });
+        } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+        }
+    },
 };
 
 MaterialController.__private = {

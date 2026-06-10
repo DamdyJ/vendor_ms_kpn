@@ -273,6 +273,9 @@ router.get(
     MaterialController.exportMaterialsToExcel
 );
 
+// Get UoM master list for dropdown
+router.get("/uom", AuthToken.authSession, MaterialController.getUomMaster);
+
 // Get material by ID with full details and attachments
 router.get("/:materialId", MaterialController.getMaterialById);
 

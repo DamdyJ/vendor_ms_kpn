@@ -4626,6 +4626,17 @@ const Material = {
         }
     },
 
+    getUomMaster: async () => {
+        try {
+            const query = `SELECT uom_code, description FROM public.mst_uom ORDER BY uom_code`;
+            const result = await pool.query(query);
+            return result.rows;
+        } catch (error) {
+            console.error("Error in MaterialModel.getUomMaster:", error);
+            throw error;
+        }
+    },
+
     getRandomMdmMaterialUser: async () => {
         try {
             return await DBClientWrapper(async client => {
@@ -6297,6 +6308,68 @@ const Material = {
                                 400,
                                 "SINGLE_REQUEST_EXTEND_REWORK_REQUIRED_FIELDS_MISSING"
                             );
+                        }
+                    }
+
+                    if (
+                        shouldPersistSingleRequestEditHistory(ticketType) &&
+                        Object.keys(editablePatch).length > 0
+                    ) {
+                        try {
+                            await client.query(
+                                `INSERT INTO mat_single_request_edit_history (
+                                    request_id,
+                                    request_no,
+                                    approval_stage,
+                                    approved_by_user_id,
+                                    approve_remark,
+                                    approved_at,
+                                    material_group_id,
+                                    material_sub_group_id,
+                                    plant_code,
+                                    sloc_code,
+                                    material_description,
+                                    base_uom,
+                                    long_text_1,
+                                    long_text_2,
+                                    long_text_3,
+                                    template_payload,
+                                    created_by,
+                                    created_at
+                                ) VALUES (
+                                    $1, $2, 'Requestor', $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+                                )`,
+                                [
+                                    snapshot.request_id,
+                                    snapshot.request_no,
+                                    actorUserId ?? null,
+                                    null,
+                                    snapshot.material_group_id ?? null,
+                                    snapshot.material_sub_group_id ?? null,
+                                    snapshot.plant_code ?? null,
+                                    snapshot.sloc_code ?? null,
+                                    snapshot.material_description ?? null,
+                                    snapshot.base_uom ?? null,
+                                    snapshot.long_text_1 ?? null,
+                                    snapshot.long_text_2 ?? null,
+                                    snapshot.long_text_3 ?? null,
+                                    snapshot.template_payload ?? null,
+                                    snapshot.created_by ?? null,
+                                    snapshot.created_at ?? null,
+                                ]
+                            );
+                        } catch (historyError) {
+                            if (
+                                isMissingSingleRequestEditHistoryTableError(
+                                    historyError
+                                )
+                            ) {
+                                console.warn(
+                                    `mat_single_request_edit_history is missing; skipping edit history insert for request ${requestId}`
+                                );
+                            } else {
+                                throw historyError;
+                            }
                         }
                     }
 
