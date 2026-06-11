@@ -1727,6 +1727,89 @@ test("approval inbox non-admin sees cancel row only for their rejected stage", (
   );
 });
 
+test("approval inbox non-admin sees REWORK row when they are any approval assignee", () => {
+  const rows = [
+    { id: 1, status: "Rework", approval_1_status: "APPROVED", approval_1_user_id: "APP-01", approval_2_status: "REWORK", approval_2_user_id: "APP-02", approval_3_status: null },
+    { id: 2, status: "Rework", approval_1_status: "APPROVED", approval_1_user_id: "APP-01", approval_2_status: "REWORK", approval_2_user_id: "APP-02", approval_3_status: null },
+  ];
+
+  assert.deepEqual(
+    filterSingleRequestApprovalInboxRows(rows, {
+      actorUserId: "APP-01",
+      actorUsername: "approval.user",
+    }).map(row => row.id),
+    [1, 2]
+  );
+
+  assert.deepEqual(
+    filterSingleRequestApprovalInboxRows(rows, {
+      actorUserId: "APP-02",
+      actorUsername: "approval.user",
+    }).map(row => row.id),
+    [1, 2]
+  );
+});
+
+test("approval inbox non-admin sees DONE row when they are any approval assignee", () => {
+  const rows = [
+    { id: 1, status: "Done", approval_1_status: "APPROVED", approval_1_user_id: "APP-01", approval_2_status: "APPROVED", approval_2_user_id: "APP-02", approval_3_status: "APPROVED", approval_3_user_id: "APP-03" },
+  ];
+
+  assert.deepEqual(
+    filterSingleRequestApprovalInboxRows(rows, {
+      actorUserId: "APP-01",
+      actorUsername: "approval.user",
+    }).map(row => row.id),
+    [1]
+  );
+
+  assert.deepEqual(
+    filterSingleRequestApprovalInboxRows(rows, {
+      actorUserId: "APP-03",
+      actorUsername: "approval.user",
+    }).map(row => row.id),
+    [1]
+  );
+});
+
+test("approval inbox non-admin sees CANCEL row when they are any approval assignee", () => {
+  const rows = [
+    { id: 1, status: "CANCEL", approval_1_status: "APPROVED", approval_1_user_id: "APP-01", approval_2_status: "REJECTED", approval_2_user_id: "APP-02", approval_3_status: null },
+  ];
+
+  assert.deepEqual(
+    filterSingleRequestApprovalInboxRows(rows, {
+      actorUserId: "APP-01",
+      actorUsername: "approval.user",
+    }).map(row => row.id),
+    [1]
+  );
+
+  assert.deepEqual(
+    filterSingleRequestApprovalInboxRows(rows, {
+      actorUserId: "APP-02",
+      actorUsername: "approval.user",
+    }).map(row => row.id),
+    [1]
+  );
+});
+
+test("approval inbox non-admin does NOT see terminal rows when not an approval assignee", () => {
+  const rows = [
+    { id: 1, status: "Rework", approval_1_status: "APPROVED", approval_1_user_id: "APP-01", approval_2_status: "REWORK", approval_2_user_id: "APP-02", approval_3_status: null },
+    { id: 2, status: "Done", approval_1_status: "APPROVED", approval_1_user_id: "APP-01", approval_2_status: "APPROVED", approval_2_user_id: "APP-02", approval_3_status: "APPROVED", approval_3_user_id: "APP-03" },
+    { id: 3, status: "CANCEL", approval_1_status: "REJECTED", approval_1_user_id: "APP-01", approval_2_status: null, approval_3_status: null },
+  ];
+
+  assert.deepEqual(
+    filterSingleRequestApprovalInboxRows(rows, {
+      actorUserId: "UNRELATED",
+      actorUsername: "other.user",
+    }).map(row => row.id),
+    []
+  );
+});
+
 test("getSingleRequestApprovalInbox query includes Approval 3 waiting rows", () => {
   assert.match(
     Material.__private.GET_SINGLE_REQUEST_APPROVAL_INBOX_QUERY,

@@ -4,6 +4,7 @@ const {
     isAdminMaterialApprover,
     getApprovalStageFieldPrefix,
     assertRequiredActionReason,
+    normalizeApprovalStatus,
     INITIAL_APPROVAL_STATUS,
 } = require("./singleRequestApproval");
 
@@ -136,6 +137,17 @@ const filterMassRequestApprovalInboxRows = (
             })
         ) {
             return true;
+        }
+
+        // Show terminal-status rows to all involved approval assignees
+        const status = normalizeApprovalStatus(row.first_item_status);
+        if (["REWORK", "DONE", "CANCEL", "REJECTED"].includes(status)) {
+            return [1, 2, 3].some(step =>
+                matchesActorUserId(
+                    row[`first_item_approval_${step}_user_id`],
+                    actorUserId
+                )
+            );
         }
 
         return false;

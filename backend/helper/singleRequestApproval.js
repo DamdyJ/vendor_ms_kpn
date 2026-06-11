@@ -331,6 +331,14 @@ const filterSingleRequestApprovalInboxRows = (
             return true;
         }
 
+        const status = normalizeApprovalStatus(row.status);
+
+        if (["REWORK", "DONE", "CANCEL", "REJECTED"].includes(status)) {
+            return [1, 2, 3].some(step =>
+                matchesActorUserId(row[`approval_${step}_user_id`], actorUserId)
+            );
+        }
+
         return false;
     });
 };

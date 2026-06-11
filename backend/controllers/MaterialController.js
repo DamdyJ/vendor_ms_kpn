@@ -5,6 +5,9 @@ const fs = require("fs");
 const path = require("path");
 const getMimeType = require("../helper/mimetype");
 const {
+    buildMaterialDescriptionAndLongText,
+} = require("../helper/materialTemplateHelper");
+const {
     isAdminMaterialApprover,
     normalizeSingleRequestTicketType,
 } = require("../helper/singleRequestApproval");
@@ -2151,12 +2154,11 @@ const MaterialController = {
 
             if (
                 ticketType !== "Extend" &&
-                (!normalizedRequestFields.material_description ||
-                    !normalizedRequestFields.base_unit_of_measure)
+                !normalizedRequestFields.base_unit_of_measure
             ) {
                 return res.status(400).json({
                     success: false,
-                    message: "Material description and Base UoM are required",
+                    message: "Base UoM is required",
                 });
             }
 
@@ -2204,6 +2206,7 @@ const MaterialController = {
                 requestFields: normalizedRequestFields,
                 templateValues:
                     validation.normalizedTemplateValues || templateValues,
+                templateConfig: validation.template || null,
                 attachments,
                 createdBy: userId,
                 createdByUsername: req.cookies?.username ?? null,
@@ -2674,7 +2677,7 @@ const MaterialController = {
                     });
                 }
 
-                if (Number(subgroup.item_group_id) !== Number(materialGroup.id)) {
+                    if (Number(subgroup.item_group_id) !== Number(materialGroup.id)) {
                     return res.status(400).json({
                         success: false,
                         message:
@@ -2688,6 +2691,35 @@ const MaterialController = {
                         ],
                     });
                 }
+
+                try {
+                    const templateConfig =
+                        await MaterialTemplate.getMaterialTemplateByGroupCode(
+                            materialGroupCode
+                        );
+                    if (
+                        templateConfig?.template &&
+                        Object.keys(templateValues).length > 0
+                    ) {
+                        const generated =
+                            buildMaterialDescriptionAndLongText(
+                                templateValues,
+                                templateConfig.template
+                            );
+                        requestFields.material_description =
+                            generated.material_description ||
+                            requestFields.material_description;
+                        requestFields.long_text_1 =
+                            generated.long_text_1 ||
+                            requestFields.long_text_1;
+                        requestFields.long_text_2 =
+                            generated.long_text_2 ||
+                            requestFields.long_text_2;
+                        requestFields.long_text_3 =
+                            generated.long_text_3 ||
+                            requestFields.long_text_3;
+                    }
+                } catch (_) {}
 
                 editedRequest = buildReworkEditedRequestPayload({
                     materialGroup,

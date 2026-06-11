@@ -260,6 +260,91 @@ test("filterMassRequestApprovalInboxRows hides rejected rows from non-rejecting 
     assert.equal(result.length, 0);
 });
 
+test("filterMassRequestApprovalInboxRows shows REWORK row to any approval assignee", () => {
+    const rows = [
+        {
+            id: 1,
+            first_item_status: "Rework",
+            first_item_approval_1_user_id: "APP-01",
+            first_item_approval_1_status: "APPROVED",
+            first_item_approval_2_user_id: "APP-02",
+            first_item_approval_2_status: "REWORK",
+            first_item_approval_3_user_id: null,
+            first_item_approval_3_status: null,
+        },
+    ];
+
+    assert.equal(
+        filterMassRequestApprovalInboxRows(rows, {
+            actorUserId: "APP-01",
+            actorUsername: "user.one",
+        }).length,
+        1
+    );
+
+    assert.equal(
+        filterMassRequestApprovalInboxRows(rows, {
+            actorUserId: "APP-02",
+            actorUsername: "user.two",
+        }).length,
+        1
+    );
+});
+
+test("filterMassRequestApprovalInboxRows shows DONE row to any approval assignee", () => {
+    const rows = [
+        {
+            id: 1,
+            first_item_status: "Done",
+            first_item_approval_1_user_id: "APP-01",
+            first_item_approval_1_status: "APPROVED",
+            first_item_approval_2_user_id: "APP-02",
+            first_item_approval_2_status: "APPROVED",
+            first_item_approval_3_user_id: "APP-03",
+            first_item_approval_3_status: "APPROVED",
+        },
+    ];
+
+    assert.equal(
+        filterMassRequestApprovalInboxRows(rows, {
+            actorUserId: "APP-01",
+            actorUsername: "user.one",
+        }).length,
+        1
+    );
+
+    assert.equal(
+        filterMassRequestApprovalInboxRows(rows, {
+            actorUserId: "APP-03",
+            actorUsername: "user.three",
+        }).length,
+        1
+    );
+});
+
+test("filterMassRequestApprovalInboxRows hides terminal rows from unrelated user", () => {
+    const rows = [
+        {
+            id: 1,
+            first_item_status: "Done",
+            first_item_approval_1_user_id: "APP-01",
+            first_item_approval_1_status: "APPROVED",
+            first_item_approval_2_user_id: "APP-02",
+            first_item_approval_2_status: "APPROVED",
+            first_item_approval_3_user_id: null,
+            first_item_approval_3_status: null,
+        },
+    ];
+
+    assert.equal(
+        filterMassRequestApprovalInboxRows(rows, {
+            actorUserId: "UNRELATED",
+            actorUsername: "other.user",
+        }).length,
+        0
+    );
+});
+
 // ---------------------------------------------------------------------------
 // canActorApproveMassRequestStage
 // ---------------------------------------------------------------------------

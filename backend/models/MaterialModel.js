@@ -44,6 +44,9 @@ const {
     buildMassRequestRejectPatch,
     syncMassRequestItemApprovalSnapshot,
 } = require("../helper/massRequestApproval");
+const {
+    buildMaterialDescriptionAndLongText,
+} = require("../helper/materialTemplateHelper");
 
 const buildSingleRequestApprovalError = (message, statusCode, code) => {
     const error = new Error(message);
@@ -5485,6 +5488,7 @@ const Material = {
         materialSubGroupId,
         requestFields = {},
         templateValues = {},
+        templateConfig = null,
         attachments = [],
         createdBy,
         createdByUsername = null,
@@ -5517,6 +5521,25 @@ const Material = {
                     ) {
                         normalizedPersistedRequestFields.material_number =
                             storedMaterialCode;
+                    }
+
+                    if (templateConfig && Object.keys(templateValues).length > 0) {
+                        const generated = buildMaterialDescriptionAndLongText(
+                            templateValues,
+                            templateConfig
+                        );
+                        normalizedPersistedRequestFields.material_description =
+                            generated.material_description ||
+                            normalizedPersistedRequestFields.material_description;
+                        normalizedPersistedRequestFields.long_text_1 =
+                            generated.long_text_1 ||
+                            normalizedPersistedRequestFields.long_text_1;
+                        normalizedPersistedRequestFields.long_text_2 =
+                            generated.long_text_2 ||
+                            normalizedPersistedRequestFields.long_text_2;
+                        normalizedPersistedRequestFields.long_text_3 =
+                            generated.long_text_3 ||
+                            normalizedPersistedRequestFields.long_text_3;
                     }
 
                     const requestNo = String(1000000000 + Number(nextId));

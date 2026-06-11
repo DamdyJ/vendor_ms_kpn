@@ -289,17 +289,6 @@ const MaterialTemplate = {
                 ? normalizedRequestFields.material_description
                 : null;
 
-            if (
-                materialDescription &&
-                materialDescription.length > MAX_MATERIAL_DESCRIPTION_LENGTH
-            ) {
-                errors.push({
-                    fieldKey: "material_description",
-                    fieldLabel: "Material Description",
-                    message: `Material Description melebihi ${MAX_MATERIAL_DESCRIPTION_LENGTH} karakter`,
-                });
-            }
-
             const previewErrors = (preview.errors || []).filter(
                 error => error.fieldKey !== "material_description"
             );

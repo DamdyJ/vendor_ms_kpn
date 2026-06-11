@@ -1,9 +1,70 @@
 const MAX_MATERIAL_DESCRIPTION_LENGTH = 40;
+const LONG_TEXT_MAX_LENGTH = 40;
 
 const normalizeWhitespace = value =>
     String(value || "")
         .replace(/\s+/g, " ")
         .trim();
+
+const splitIntoChunks = (text, maxChunkLength = MAX_MATERIAL_DESCRIPTION_LENGTH) => {
+    const normalized = normalizeWhitespace(text);
+    if (!normalized) {
+        return [];
+    }
+
+    if (normalized.length <= maxChunkLength) {
+        return [normalized];
+    }
+
+    const chunks = [];
+    let remaining = normalized;
+
+    while (remaining.length > 0) {
+        if (remaining.length <= maxChunkLength) {
+            chunks.push(remaining);
+            break;
+        }
+
+        let splitIndex = remaining.lastIndexOf(" ", maxChunkLength);
+        if (splitIndex <= 0) {
+            splitIndex = maxChunkLength;
+        } else {
+            splitIndex += 1;
+        }
+
+        chunks.push(remaining.substring(0, splitIndex).trim());
+        remaining = remaining.substring(splitIndex).trim();
+    }
+
+    return chunks;
+};
+
+const buildMaterialDescriptionAndLongText = (templateValues = {}, templateConfig = {}) => {
+    const fields = Array.isArray(templateConfig?.fields) ? templateConfig.fields : [];
+    const sortedFields = [...fields].sort((a, b) => {
+        const orderA = Number(a.fieldOrder ?? Number.MAX_SAFE_INTEGER);
+        const orderB = Number(b.fieldOrder ?? Number.MAX_SAFE_INTEGER);
+        return orderA - orderB;
+    });
+
+    const descriptionParts = [];
+    for (const field of sortedFields) {
+        const value = normalizeTemplateValue(templateValues[field.fieldKey]);
+        if (value) {
+            descriptionParts.push(value);
+        }
+    }
+
+    const fullDescription = normalizeWhitespace(descriptionParts.join(" "));
+    const chunks = splitIntoChunks(fullDescription, MAX_MATERIAL_DESCRIPTION_LENGTH);
+
+    return {
+        material_description: chunks[0] || "",
+        long_text_1: chunks[1] || "",
+        long_text_2: chunks[2] || "",
+        long_text_3: chunks[3] || "",
+    };
+};
 
 const normalizeTemplateValue = value =>
     normalizeWhitespace(value).toUpperCase();
@@ -164,31 +225,23 @@ const validateTemplateValues = (templateConfig, rawValues = {}) => {
     }
 
     const fullDescription = normalizeWhitespace(descriptionParts.join(" "));
-    const exceedsMaterialDescriptionLimit =
-        fullDescription.length > MAX_MATERIAL_DESCRIPTION_LENGTH;
-
-    if (exceedsMaterialDescriptionLimit) {
-        errors.push({
-            fieldKey: "material_description",
-            fieldLabel: "Material Description",
-            message: `Material Description melebihi ${MAX_MATERIAL_DESCRIPTION_LENGTH} karakter`,
-        });
-    }
 
     return {
         errors,
         normalizedValues,
         fullDescription,
         materialDescription: fullDescription,
-        exceedsMaterialDescriptionLimit,
     };
 };
 
 module.exports = {
     MAX_MATERIAL_DESCRIPTION_LENGTH,
+    LONG_TEXT_MAX_LENGTH,
+    buildMaterialDescriptionAndLongText,
     hasValue,
     mapTemplateConfigRows,
     normalizeTemplateValue,
     normalizeWhitespace,
+    splitIntoChunks,
     validateTemplateValues,
 };
