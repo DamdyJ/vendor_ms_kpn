@@ -10,6 +10,13 @@ const {
     buildMaterialFormSchema,
 } = require("../helper/materialFormSchemaHelper.js");
 
+function parseWildcardSearch(term) {
+    if (!term || !term.includes('*')) return null;
+    const segments = term.split('*').map(s => s.trim()).filter(s => s.length > 0);
+    if (segments.length === 0) return null;
+    return { isWildcard: true, segments };
+}
+
 const MaterialTemplate = {
     getMaterialTemplates: async () => {
         return DBClientWrapper(async client => {
@@ -357,78 +364,145 @@ const MaterialTemplate = {
             }
 
             const safeLimit = Math.min(Number(limit) || 10, 25);
+            const wildcard = parseWildcardSearch(normalizedQuery);
 
-            const wordMatchSubquery = `
-                m.code ILIKE '%' || word || '%'
-                OR m.name ILIKE '%' || word || '%'
-                OR m.description ILIKE '%' || word || '%'
-                OR m.long_text ILIKE '%' || word || '%'
-                OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
-                OR m.alias1 ILIKE '%' || word || '%'
-                OR m.alias2 ILIKE '%' || word || '%'
-                OR m.alias3 ILIKE '%' || word || '%'
-            `;
+            const searchableFields = [
+                "m.code",
+                "m.name",
+                "COALESCE(m.description, '')",
+                "COALESCE(m.long_text, '')",
+                "COALESCE(m.unit_of_measurement, '')",
+                "COALESCE(m.alias1, '')",
+                "COALESCE(m.alias2, '')",
+                "COALESCE(m.alias3, '')",
+            ];
 
-            const searchCondition = `
-                EXISTS (
-                    SELECT 1 FROM unnest(string_to_array($search, ' ')) AS word
-                    WHERE ${wordMatchSubquery}
-                )
-            `;
+            const params = [];
+            let queryText;
 
-            const params = [normalizedQuery];
+            if (wildcard) {
+                const ilikePatterns = wildcard.segments.map(
+                    (_, i) => `'%' || $${i + 1} || '%'`
+                );
+                params.push(...wildcard.segments);
 
-            const queryText = materialGroupCode
-                ? `
-                    SELECT
-                        m.id,
-                        m.code,
-                        m.name,
-                        m.description,
-                        m.alias1,
-                        m.alias2,
-                        m.alias3,
-                        mig.code AS material_group_code,
-                        mig.name AS material_group_name
-                    FROM mat_sap_data m
-                    JOIN mat_item_sub_group mis ON mis.id = m.material_sub_group_id
-                    JOIN mat_item_group mig ON mig.id = mis.item_group_id
-                    WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
-                      AND mig.code = $2
-                      AND ${searchCondition.replace(/\$search/g, '$1')}
-                    ORDER BY
-                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.code ILIKE '%' || word || '%') DESC,
-                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.name ILIKE '%' || word || '%') DESC,
-                        m.code ASC
-                    LIMIT $3
-                `
-                : `
-                    SELECT
-                        m.id,
-                        m.code,
-                        m.name,
-                        m.description,
-                        m.alias1,
-                        m.alias2,
-                        m.alias3,
-                        mig.code AS material_group_code,
-                        mig.name AS material_group_name
-                    FROM mat_sap_data m
-                    JOIN mat_item_sub_group mis ON mis.id = m.material_sub_group_id
-                    JOIN mat_item_group mig ON mig.id = mis.item_group_id
-                    WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
-                      AND ${searchCondition.replace(/\$search/g, '$1')}
-                    ORDER BY
-                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.code ILIKE '%' || word || '%') DESC,
-                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.name ILIKE '%' || word || '%') DESC,
-                        m.code ASC
-                    LIMIT $2
+                if (materialGroupCode) {
+                    params.push(materialGroupCode, safeLimit);
+                    const wcLen = wildcard.segments.length;
+                    queryText = `
+                        SELECT
+                            m.id,
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            mig.code AS material_group_code,
+                            mig.name AS material_group_name
+                        FROM mat_sap_data m
+                        JOIN mat_item_sub_group mis ON mis.id = m.material_sub_group_id
+                        JOIN mat_item_group mig ON mig.id = mis.item_group_id
+                        WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                          AND mig.code = $${wcLen + 1}
+                          AND CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${ilikePatterns.join(", ")}])
+                        ORDER BY m.code ASC
+                        LIMIT $${wcLen + 2}
+                    `;
+                } else {
+                    params.push(safeLimit);
+                    queryText = `
+                        SELECT
+                            m.id,
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            mig.code AS material_group_code,
+                            mig.name AS material_group_name
+                        FROM mat_sap_data m
+                        JOIN mat_item_sub_group mis ON mis.id = m.material_sub_group_id
+                        JOIN mat_item_group mig ON mig.id = mis.item_group_id
+                        WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                          AND CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${ilikePatterns.join(", ")}])
+                        ORDER BY m.code ASC
+                        LIMIT $${wildcard.segments.length + 1}
+                    `;
+                }
+            } else {
+                params.push(normalizedQuery);
+                const wordMatchSubquery = `
+                    m.code ILIKE '%' || word || '%'
+                    OR m.name ILIKE '%' || word || '%'
+                    OR m.description ILIKE '%' || word || '%'
+                    OR m.long_text ILIKE '%' || word || '%'
+                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                    OR m.alias1 ILIKE '%' || word || '%'
+                    OR m.alias2 ILIKE '%' || word || '%'
+                    OR m.alias3 ILIKE '%' || word || '%'
                 `;
 
-            if (materialGroupCode) {
-                params.push(materialGroupCode, safeLimit);
-            } else {
-                params.push(safeLimit);
+                const searchCondition = `
+                    EXISTS (
+                        SELECT 1 FROM unnest(string_to_array($search, ' ')) AS word
+                        WHERE ${wordMatchSubquery}
+                    )
+                `;
+
+                queryText = materialGroupCode
+                    ? `
+                        SELECT
+                            m.id,
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            mig.code AS material_group_code,
+                            mig.name AS material_group_name
+                        FROM mat_sap_data m
+                        JOIN mat_item_sub_group mis ON mis.id = m.material_sub_group_id
+                        JOIN mat_item_group mig ON mig.id = mis.item_group_id
+                        WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                          AND mig.code = $2
+                          AND ${searchCondition.replace(/\$search/g, '$1')}
+                        ORDER BY
+                            (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.code ILIKE '%' || word || '%') DESC,
+                            (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.name ILIKE '%' || word || '%') DESC,
+                            m.code ASC
+                        LIMIT $3
+                    `
+                    : `
+                        SELECT
+                            m.id,
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            mig.code AS material_group_code,
+                            mig.name AS material_group_name
+                        FROM mat_sap_data m
+                        JOIN mat_item_sub_group mis ON mis.id = m.material_sub_group_id
+                        JOIN mat_item_group mig ON mig.id = mis.item_group_id
+                        WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                          AND ${searchCondition.replace(/\$search/g, '$1')}
+                        ORDER BY
+                            (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.code ILIKE '%' || word || '%') DESC,
+                            (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.name ILIKE '%' || word || '%') DESC,
+                            m.code ASC
+                        LIMIT $2
+                    `;
+
+                if (materialGroupCode) {
+                    params.push(materialGroupCode, safeLimit);
+                } else {
+                    params.push(safeLimit);
+                }
             }
 
             const result = await client.query(queryText, params);

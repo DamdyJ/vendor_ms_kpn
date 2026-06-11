@@ -1730,6 +1730,13 @@ const GET_ADMINISTRATOR_APPROVER_MASTERS_QUERY = `SELECT
     ) active_requests
         ON active_requests.requester_user_id = u.user_id`;
 
+function parseWildcardSearch(term) {
+    if (!term || !term.includes('*')) return null;
+    const segments = term.split('*').map(s => s.trim()).filter(s => s.length > 0);
+    if (segments.length === 0) return null;
+    return { isWildcard: true, segments };
+}
+
 const Material = {
     // Create a new material group
     createMaterialGroup: async groupData => {
@@ -2416,9 +2423,8 @@ const Material = {
         try {
             return await DBClientWrapper(async client => {
                 const offset = (page - 1) * pageSize;
-                const searchPattern = searchQuery ? `%${searchQuery}%` : null;
+                const wildcard = parseWildcardSearch(searchQuery);
 
-                // Whitelist allowed sort columns and directions
                 const _allowedSortCols = {
                     code: "m.code",
                     name: "m.name",
@@ -2437,22 +2443,47 @@ const Material = {
                         : "ASC";
                 const sortClause = `${_safeSortCol} ${_safeOrder}`;
 
-                // Build where clause and params based on search query
-                let whereClause = "m.material_sub_group_id = $1";
+                const searchableFields = [
+                    "m.code",
+                    "m.name",
+                    "COALESCE(m.description, '')",
+                    "COALESCE(m.long_text, '')",
+                    "COALESCE(m.unit_of_measurement, '')",
+                    "COALESCE(m.alias1, '')",
+                    "COALESCE(m.alias2, '')",
+                    "COALESCE(m.alias3, '')",
+                ];
+
                 let countWhereClause = "m.material_sub_group_id = $1";
+                let materialWhereClause = "m.material_sub_group_id = $1";
                 let countParams = [subGroupId];
                 let materialParams = [subGroupId, pageSize, offset];
 
-                if (searchPattern) {
-                    countWhereClause +=
-                        " AND (m.name ILIKE $2 OR m.description ILIKE $2 OR m.code ILIKE $2 OR COALESCE(m.long_text, '') ILIKE $2 OR COALESCE(m.unit_of_measurement, '') ILIKE $2 OR COALESCE(m.alias1, '') ILIKE $2 OR COALESCE(m.alias2, '') ILIKE $2 OR COALESCE(m.alias3, '') ILIKE $2)";
-                    whereClause +=
-                        " AND (m.name ILIKE $4 OR m.description ILIKE $4 OR m.code ILIKE $4 OR COALESCE(m.long_text, '') ILIKE $4 OR COALESCE(m.unit_of_measurement, '') ILIKE $4 OR COALESCE(m.alias1, '') ILIKE $4 OR COALESCE(m.alias2, '') ILIKE $4 OR COALESCE(m.alias3, '') ILIKE $4)";
+                if (wildcard) {
+                    const wildcardValues = [...wildcard.segments];
+
+                    const countIlike = wildcard.segments.map(
+                        (_, i) => `'%' || $${countParams.length + 1 + i} || '%'`
+                    );
+                    countWhereClause += ` AND CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${countIlike.join(", ")}])`;
+                    countParams.push(...wildcardValues);
+
+                    const matIlike = wildcard.segments.map(
+                        (_, i) => `'%' || $${materialParams.length + 1 + i} || '%'`
+                    );
+                    materialWhereClause += ` AND CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${matIlike.join(", ")}])`;
+                    materialParams.push(...wildcardValues);
+                } else if (searchQuery) {
+                    const searchPattern = `%${searchQuery}%`;
+                    const fieldClause = searchableFields.map(f => `${f} ILIKE $2`).join(" OR ");
+                    countWhereClause += ` AND (${fieldClause})`;
                     countParams.push(searchPattern);
+
+                    const matFieldClause = searchableFields.map(f => `${f} ILIKE $4`).join(" OR ");
+                    materialWhereClause += ` AND (${matFieldClause})`;
                     materialParams.push(searchPattern);
                 }
 
-                // First get the total count
                 const countQuery = await client.query(
                     `
                     SELECT COUNT(*) as total
@@ -2538,7 +2569,7 @@ const Material = {
                     JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
                     JOIN mat_item_group mig ON mis.item_group_id = mig.id
                         LEFT JOIN mst_user u ON m.created_by = u.user_id
-                    WHERE ${whereClause}
+                    WHERE ${materialWhereClause}
                     ORDER BY ${sortClause}
                     LIMIT $2 OFFSET $3
                     `,
@@ -2619,7 +2650,6 @@ const Material = {
     ) => {
         try {
             return await DBClientWrapper(async client => {
-                // Build a safe sorting clause from sorting_state by whitelisting columns and directions
                 let sorting_q = "";
                 if (sorting_state) {
                     const colMap = {
@@ -2647,112 +2677,186 @@ const Material = {
                 console.log(sorting_q);
                 const offset = (page - 1) * pageSize;
                 const safeSearchTerm = String(searchTerm || "").trim();
-                const toTsQuery = input =>
-                    input
-                        .trim()
-                        .split(/\s+/)
-                        .map(word => `${word}:*`)
-                        .join(" & ");
+                const wildcard = parseWildcardSearch(safeSearchTerm);
                 const isSearch = safeSearchTerm.length > 0;
-                const tsQuery = toTsQuery(safeSearchTerm);
-                const ilikeExact = safeSearchTerm;
-                const ilikePartial = `%${safeSearchTerm}%`;
+
+                const searchableFields = [
+                    "m.code",
+                    "m.name",
+                    "COALESCE(m.description, '')",
+                    "COALESCE(m.long_text, '')",
+                    "COALESCE(m.unit_of_measurement, '')",
+                    "COALESCE(m.alias1, '')",
+                    "COALESCE(m.alias2, '')",
+                    "COALESCE(m.alias3, '')",
+                ];
+
                 let totalCount = 0;
                 let materialsQueryResult = [];
                 if (isSearch) {
-                    const countRes = await client.query(
-                        `SELECT COUNT(*) AS total
-                        FROM mat_sap_data m
-                        WHERE (
-                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                            OR (
-                                SELECT bool_and(
-                                    m.code ILIKE '%' || word || '%'
-                                    OR m.name ILIKE '%' || word || '%'
-                                    OR m.description ILIKE '%' || word || '%'
-                                    OR m.long_text ILIKE '%' || word || '%'
-                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
-                                    OR m.alias1 ILIKE '%' || word || '%'
-                                    OR m.alias2 ILIKE '%' || word || '%'
-                                    OR m.alias3 ILIKE '%' || word || '%'
+                    if (wildcard) {
+                        const ilikePatterns = wildcard.segments.map(
+                            (_, i) => `'%' || $${i + 1} || '%'`
+                        );
+                        const wildcardParams = [...wildcard.segments];
+
+                        const countRes = await client.query(
+                            `SELECT COUNT(*) AS total
+                            FROM mat_sap_data m
+                            WHERE CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${ilikePatterns.join(", ")}])`,
+                            wildcardParams
+                        );
+                        totalCount = parseInt(countRes.rows[0].total);
+
+                        const result = await client.query(
+                            `SELECT
+                                m.id,
+                                m.code,
+                                m.name,
+                                m.description,
+                                m.long_text,
+                                m.unit_of_measurement,
+                                CASE
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                    WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
+                                    ELSE NULL
+                                END AS combined_description,
+                                CASE
+                                    WHEN m.dffromclient IS TRUE THEN 'Inactive'
+                                    ELSE 'Active'
+                                END AS status,
+                                u.fullname AS "user_fullname",
+                                m.alias1,
+                                m.alias2,
+                                m.alias3,
+                                m.filter_code_1,
+                                m.filter_code_2,
+                                m.material_sub_group_id,
+                                m.created_at,
+                                m.updated_at,
+                                m.dfFromClient,
+                                m.created_by,
+                                mis.id AS "subGroupId",
+                                mis.code AS "subGroupCode",
+                                mis.name AS "subGroupName",
+                                mig.id AS "groupId",
+                                mig.code AS "groupCode",
+                                mig.name AS "groupName"
+                            FROM mat_sap_data m
+                            JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                            JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                            LEFT JOIN mst_user u ON m.created_by = u.user_id
+                            WHERE CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${ilikePatterns.join(", ")}])
+                            ORDER BY ${sorting_q}m.code ASC, m.name ASC
+                            LIMIT $${wildcardParams.length + 1} OFFSET $${wildcardParams.length + 2}`,
+                            [...wildcardParams, pageSize, offset]
+                        );
+                        materialsQueryResult = result.rows;
+                    } else {
+                        const toTsQuery = input =>
+                            input
+                                .trim()
+                                .split(/\s+/)
+                                .map(word => `${word}:*`)
+                                .join(" & ");
+                        const tsQuery = toTsQuery(safeSearchTerm);
+                        const ilikeExact = safeSearchTerm;
+                        const ilikePartial = `%${safeSearchTerm}%`;
+                        const countRes = await client.query(
+                            `SELECT COUNT(*) AS total
+                            FROM mat_sap_data m
+                            WHERE (
+                                to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                                OR (
+                                    SELECT bool_and(
+                                        m.code ILIKE '%' || word || '%'
+                                        OR m.name ILIKE '%' || word || '%'
+                                        OR m.description ILIKE '%' || word || '%'
+                                        OR m.long_text ILIKE '%' || word || '%'
+                                        OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                        OR m.alias1 ILIKE '%' || word || '%'
+                                        OR m.alias2 ILIKE '%' || word || '%'
+                                        OR m.alias3 ILIKE '%' || word || '%'
+                                    )
+                                    FROM unnest(string_to_array($2, ' ')) AS word
                                 )
-                                FROM unnest(string_to_array($2, ' ')) AS word
-                            )
-                        )`,
-                        [tsQuery, safeSearchTerm]
-                    );
-                    totalCount = parseInt(countRes.rows[0].total);
-                    const result = await client.query(
-                        `SELECT
-                            m.id,
-                            m.code,
-                            m.name,
-                            m.description,
-                            m.long_text,
-                            m.unit_of_measurement,
-                            CASE
-                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
-                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
-                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
-                                ELSE NULL
-                            END AS combined_description,
-                            CASE
-                                WHEN m.dffromclient IS TRUE THEN 'Inactive'
-                                ELSE 'Active'
-                            END AS status,
-                            u.fullname AS "user_fullname",
-                            m.alias1,
-                            m.alias2,
-                            m.alias3,
-                            m.filter_code_1,
-                            m.filter_code_2,
-                            m.material_sub_group_id,
-                            m.created_at,
-                            m.updated_at,
-                            m.dfFromClient,
-                            m.created_by,
-                            mis.id AS "subGroupId",
-                            mis.code AS "subGroupCode",
-                            mis.name AS "subGroupName",
-                            mig.id AS "groupId",
-                            mig.code AS "groupCode",
-                            mig.name AS "groupName",
-                            ts_rank_cd(
-                                setweight(to_tsvector(COALESCE(m.name, '')), 'A') ||
-                                setweight(to_tsvector(COALESCE(m.description, '')), 'B') ||
-                                setweight(to_tsvector(COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '')), 'C') ||
-                                setweight(to_tsvector(COALESCE(m.alias1, '')), 'D'),
-                                to_tsquery('english', $1)
-                            ) AS rank,
-                            CASE
-                                WHEN m.code ILIKE $2 THEN 1
-                                WHEN m.code ILIKE $4 THEN 2
-                                ELSE 3
-                            END AS code_match_rank
-                        FROM mat_sap_data m
-                        JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
-                        JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                        LEFT JOIN mst_user u ON m.created_by = u.user_id
-                        WHERE (
-                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                            OR (
-                                SELECT bool_and(
-                                    m.code ILIKE '%' || word || '%'
-                                    OR m.name ILIKE '%' || word || '%'
-                                    OR m.description ILIKE '%' || word || '%'
-                                    OR m.long_text ILIKE '%' || word || '%'
-                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
-                                    OR m.alias1 ILIKE '%' || word || '%'
-                                    OR m.alias2 ILIKE '%' || word || '%'
-                                    OR m.alias3 ILIKE '%' || word || '%'
+                            )`,
+                            [tsQuery, safeSearchTerm]
+                        );
+                        totalCount = parseInt(countRes.rows[0].total);
+                        const result = await client.query(
+                            `SELECT
+                                m.id,
+                                m.code,
+                                m.name,
+                                m.description,
+                                m.long_text,
+                                m.unit_of_measurement,
+                                CASE
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                    WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
+                                    ELSE NULL
+                                END AS combined_description,
+                                CASE
+                                    WHEN m.dffromclient IS TRUE THEN 'Inactive'
+                                    ELSE 'Active'
+                                END AS status,
+                                u.fullname AS "user_fullname",
+                                m.alias1,
+                                m.alias2,
+                                m.alias3,
+                                m.filter_code_1,
+                                m.filter_code_2,
+                                m.material_sub_group_id,
+                                m.created_at,
+                                m.updated_at,
+                                m.dfFromClient,
+                                m.created_by,
+                                mis.id AS "subGroupId",
+                                mis.code AS "subGroupCode",
+                                mis.name AS "subGroupName",
+                                mig.id AS "groupId",
+                                mig.code AS "groupCode",
+                                mig.name AS "groupName",
+                                ts_rank_cd(
+                                    setweight(to_tsvector(COALESCE(m.name, '')), 'A') ||
+                                    setweight(to_tsvector(COALESCE(m.description, '')), 'B') ||
+                                    setweight(to_tsvector(COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '')), 'C') ||
+                                    setweight(to_tsvector(COALESCE(m.alias1, '')), 'D'),
+                                    to_tsquery('english', $1)
+                                ) AS rank,
+                                CASE
+                                    WHEN m.code ILIKE $2 THEN 1
+                                    WHEN m.code ILIKE $4 THEN 2
+                                    ELSE 3
+                                END AS code_match_rank
+                            FROM mat_sap_data m
+                            JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                            JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                            LEFT JOIN mst_user u ON m.created_by = u.user_id
+                            WHERE (
+                                to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                                OR (
+                                    SELECT bool_and(
+                                        m.code ILIKE '%' || word || '%'
+                                        OR m.name ILIKE '%' || word || '%'
+                                        OR m.description ILIKE '%' || word || '%'
+                                        OR m.long_text ILIKE '%' || word || '%'
+                                        OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                        OR m.alias1 ILIKE '%' || word || '%'
+                                        OR m.alias2 ILIKE '%' || word || '%'
+                                        OR m.alias3 ILIKE '%' || word || '%'
+                                    )
+                                    FROM unnest(string_to_array($3, ' ')) AS word
                                 )
-                                FROM unnest(string_to_array($3, ' ')) AS word
-                            )
-                        ) ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
-                        LIMIT $5 OFFSET $6`,
-                        [tsQuery, ilikeExact, safeSearchTerm, ilikePartial, pageSize, offset]
-                    );
-                    materialsQueryResult = result.rows;
+                            ) ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
+                            LIMIT $5 OFFSET $6`,
+                            [tsQuery, ilikeExact, safeSearchTerm, ilikePartial, pageSize, offset]
+                        );
+                        materialsQueryResult = result.rows;
+                    }
                 } else {
                     const countRes = await client.query(
                         `SELECT COUNT(*) AS total FROM mat_sap_data`
@@ -2839,7 +2943,6 @@ const Material = {
     ) => {
         try {
             return await DBClientWrapper(async client => {
-                // Build a safe sorting clause from sorting_state by whitelisting columns and directions
                 let sorting_q = "";
                 if (sorting_state) {
                     const colMap = {
@@ -2862,143 +2965,236 @@ const Material = {
                 }
                 const offset = (page - 1) * pageSize;
                 const safeSearchTerm = String(searchTerm || "").trim();
-                const toTsQuery = input =>
-                    input
-                        .trim()
-                        .split(/\s+/)
-                        .map(word => `${word}:*`)
-                        .join(" & ");
+                const wildcard = parseWildcardSearch(safeSearchTerm);
                 const isSearch = safeSearchTerm.length > 0;
-                const tsQuery = toTsQuery(safeSearchTerm);
-                const ilikeExact = safeSearchTerm;
-                const ilikePartial = `%${safeSearchTerm}%`;
-                const searchTermForTrgm = safeSearchTerm;
-                const wordSearchEnabled = safeSearchTerm.split(/\s+/).filter(Boolean).length > 0;
-                const searchWordArray = wordSearchEnabled ? safeSearchTerm.split(/\s+/).filter(Boolean) : [];
+
+                const searchableFields = [
+                    "m.code",
+                    "m.name",
+                    "COALESCE(m.description, '')",
+                    "COALESCE(m.long_text, '')",
+                    "COALESCE(m.unit_of_measurement, '')",
+                    "COALESCE(m.alias1, '')",
+                    "COALESCE(m.alias2, '')",
+                    "COALESCE(m.alias3, '')",
+                ];
+
                 let totalCount = 0;
                 let materialsQueryResult = [];
                 if (isSearch) {
-                    const countRes = await client.query(
-                        `SELECT COUNT(*) AS total
-                        FROM mat_sap_data m
-                        JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
-                        JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                        WHERE (m.dffromclient IS NULL OR dffromclient = false)
-                        AND (
-                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                            OR (
-                                SELECT bool_and(
-                                    m.code ILIKE '%' || word || '%'
-                                    OR m.name ILIKE '%' || word || '%'
-                                    OR m.description ILIKE '%' || word || '%'
-                                    OR m.long_text ILIKE '%' || word || '%'
-                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
-                                    OR m.alias1 ILIKE '%' || word || '%'
-                                    OR m.alias2 ILIKE '%' || word || '%'
-                                    OR m.alias3 ILIKE '%' || word || '%'
+                    if (wildcard) {
+                        const ilikePatterns = wildcard.segments.map(
+                            (_, i) => `'%' || $${i + 1} || '%'`
+                        );
+                        const wildcardParams = [...wildcard.segments];
+                        const groupParamIdx = wildcardParams.length + 1;
+
+                        const countRes = await client.query(
+                            `SELECT COUNT(*) AS total
+                            FROM mat_sap_data m
+                            JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                            JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                            WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                            AND CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${ilikePatterns.join(", ")}])
+                            ${groupId ? ` AND mig.id = $${groupParamIdx}` : ""}`,
+                            groupId ? [...wildcardParams, groupId] : wildcardParams
+                        );
+                        totalCount = parseInt(countRes.rows[0].total);
+
+                        const limitIdx = groupId ? groupParamIdx + 1 : wildcardParams.length + 1;
+                        const offsetIdx = limitIdx + 1;
+                        const groupWhereIdx = groupId ? groupParamIdx : null;
+
+                        let selectParams = [...wildcardParams];
+                        let limitParamIdx = wildcardParams.length + 1;
+                        if (groupId) {
+                            selectParams.push(groupId);
+                            limitParamIdx++;
+                        }
+                        selectParams.push(pageSize, offset);
+
+                        const result = await client.query(
+                            `SELECT
+                                m.id,
+                                m.code,
+                                m.name,
+                                m.description,
+                                m.long_text,
+                                m.unit_of_measurement,
+                                m.plant_code,
+                                m.sloc_code,
+                                CASE
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                    WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
+                                    ELSE NULL
+                                END AS combined_description,
+                                CASE
+                                    WHEN m.dffromclient IS TRUE THEN 'Inactive'
+                                    ELSE 'Active'
+                                END AS status,
+                                u.fullname AS "user_fullname",
+                                m.alias1,
+                                m.alias2,
+                                m.alias3,
+                                m.filter_code_1,
+                                m.filter_code_2,
+                                m.material_sub_group_id,
+                                m.created_at,
+                                m.updated_at,
+                                m.dfFromClient,
+                                m.created_by,
+                                mis.id AS "subGroupId",
+                                mis.code AS "subGroupCode",
+                                mis.name AS "subGroupName",
+                                mig.id AS "groupId",
+                                mig.code AS "groupCode",
+                                mig.name AS "groupName"
+                            FROM mat_sap_data m
+                            JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                            JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                            LEFT JOIN mst_user u ON m.created_by = u.user_id
+                            WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                            AND CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${ilikePatterns.join(", ")}])
+                            ${groupId ? ` AND mig.id = $${wildcardParams.length + 1}` : ""}
+                            ORDER BY ${sorting_q}m.code ASC, m.name ASC
+                            LIMIT $${limitParamIdx} OFFSET $${limitParamIdx + 1}`,
+                            selectParams
+                        );
+                        materialsQueryResult = result.rows;
+                    } else {
+                        const toTsQuery = input =>
+                            input
+                                .trim()
+                                .split(/\s+/)
+                                .map(word => `${word}:*`)
+                                .join(" & ");
+                        const tsQuery = toTsQuery(safeSearchTerm);
+                        const ilikeExact = safeSearchTerm;
+                        const ilikePartial = `%${safeSearchTerm}%`;
+                        const searchTermForTrgm = safeSearchTerm;
+                        const countRes = await client.query(
+                            `SELECT COUNT(*) AS total
+                            FROM mat_sap_data m
+                            JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                            JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                            WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                            AND (
+                                to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                                OR (
+                                    SELECT bool_and(
+                                        m.code ILIKE '%' || word || '%'
+                                        OR m.name ILIKE '%' || word || '%'
+                                        OR m.description ILIKE '%' || word || '%'
+                                        OR m.long_text ILIKE '%' || word || '%'
+                                        OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                        OR m.alias1 ILIKE '%' || word || '%'
+                                        OR m.alias2 ILIKE '%' || word || '%'
+                                        OR m.alias3 ILIKE '%' || word || '%'
+                                    )
+                                    FROM unnest(string_to_array($2, ' ')) AS word
                                 )
-                                FROM unnest(string_to_array($2, ' ')) AS word
                             )
-                        )
-                        ${groupId ? " AND mig.id = $3" : ""}`,
-                        groupId
-                            ? [tsQuery, searchTermForTrgm, groupId]
-                            : [tsQuery, searchTermForTrgm]
-                    );
-                    totalCount = parseInt(countRes.rows[0].total);
-                    const result = await client.query(
-                        `SELECT
-                            m.id,
-                            m.code,
-                            m.name,
-                            m.description,
-                            m.long_text,
-                            m.unit_of_measurement,
-                            m.plant_code,
-                            m.sloc_code,
-                            CASE
-                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
-                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
-                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
-                                ELSE NULL
-                            END AS combined_description,
-                            CASE
-                                WHEN m.dffromclient IS TRUE THEN 'Inactive'
-                                ELSE 'Active'
-                            END AS status,
-                            u.fullname AS "user_fullname",
-                            m.alias1,
-                            m.alias2,
-                            m.alias3,
-                            m.filter_code_1,
-                            m.filter_code_2,
-                            m.material_sub_group_id,
-                            m.created_at,
-                            m.updated_at,
-                            m.dfFromClient,
-                            m.created_by,
-                            mis.id AS "subGroupId",
-                            mis.code AS "subGroupCode",
-                            mis.name AS "subGroupName",
-                            mig.id AS "groupId",
-                            mig.code AS "groupCode",
-                            mig.name AS "groupName",
-                            ts_rank_cd(
-                                setweight(to_tsvector(COALESCE(m.name, '')), 'A') ||
-                                setweight(to_tsvector(COALESCE(m.description, '')), 'B') ||
-                                setweight(to_tsvector(COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '')), 'C') ||
-                                setweight(to_tsvector(COALESCE(m.alias1, '')), 'D'),
-                                to_tsquery('english', $1)
-                            ) AS rank,
-                            CASE
-                                WHEN m.code ILIKE $2 THEN 1
-                                WHEN m.code ILIKE $4 THEN 2
-                                ELSE 3
-                            END AS code_match_rank
-                        FROM mat_sap_data m
-                        JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
-                        JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                        LEFT JOIN mst_user u ON m.created_by = u.user_id
-                        WHERE (m.dffromclient IS NULL OR dffromclient = false)
-                        AND (
-                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                            OR (
-                                SELECT bool_and(
-                                    m.code ILIKE '%' || word || '%'
-                                    OR m.name ILIKE '%' || word || '%'
-                                    OR m.description ILIKE '%' || word || '%'
-                                    OR m.long_text ILIKE '%' || word || '%'
-                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
-                                    OR m.alias1 ILIKE '%' || word || '%'
-                                    OR m.alias2 ILIKE '%' || word || '%'
-                                    OR m.alias3 ILIKE '%' || word || '%'
+                            ${groupId ? " AND mig.id = $3" : ""}`,
+                            groupId
+                                ? [tsQuery, searchTermForTrgm, groupId]
+                                : [tsQuery, searchTermForTrgm]
+                        );
+                        totalCount = parseInt(countRes.rows[0].total);
+                        const result = await client.query(
+                            `SELECT
+                                m.id,
+                                m.code,
+                                m.name,
+                                m.description,
+                                m.long_text,
+                                m.unit_of_measurement,
+                                m.plant_code,
+                                m.sloc_code,
+                                CASE
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                    WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
+                                    ELSE NULL
+                                END AS combined_description,
+                                CASE
+                                    WHEN m.dffromclient IS TRUE THEN 'Inactive'
+                                    ELSE 'Active'
+                                END AS status,
+                                u.fullname AS "user_fullname",
+                                m.alias1,
+                                m.alias2,
+                                m.alias3,
+                                m.filter_code_1,
+                                m.filter_code_2,
+                                m.material_sub_group_id,
+                                m.created_at,
+                                m.updated_at,
+                                m.dfFromClient,
+                                m.created_by,
+                                mis.id AS "subGroupId",
+                                mis.code AS "subGroupCode",
+                                mis.name AS "subGroupName",
+                                mig.id AS "groupId",
+                                mig.code AS "groupCode",
+                                mig.name AS "groupName",
+                                ts_rank_cd(
+                                    setweight(to_tsvector(COALESCE(m.name, '')), 'A') ||
+                                    setweight(to_tsvector(COALESCE(m.description, '')), 'B') ||
+                                    setweight(to_tsvector(COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '')), 'C') ||
+                                    setweight(to_tsvector(COALESCE(m.alias1, '')), 'D'),
+                                    to_tsquery('english', $1)
+                                ) AS rank,
+                                CASE
+                                    WHEN m.code ILIKE $2 THEN 1
+                                    WHEN m.code ILIKE $4 THEN 2
+                                    ELSE 3
+                                END AS code_match_rank
+                            FROM mat_sap_data m
+                            JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                            JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                            LEFT JOIN mst_user u ON m.created_by = u.user_id
+                            WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                            AND (
+                                to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                                OR (
+                                    SELECT bool_and(
+                                        m.code ILIKE '%' || word || '%'
+                                        OR m.name ILIKE '%' || word || '%'
+                                        OR m.description ILIKE '%' || word || '%'
+                                        OR m.long_text ILIKE '%' || word || '%'
+                                        OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                        OR m.alias1 ILIKE '%' || word || '%'
+                                        OR m.alias2 ILIKE '%' || word || '%'
+                                        OR m.alias3 ILIKE '%' || word || '%'
+                                    )
+                                    FROM unnest(string_to_array($3, ' ')) AS word
                                 )
-                                FROM unnest(string_to_array($3, ' ')) AS word
                             )
-                        )
-                        ${groupId ? " AND mig.id = $7" : ""}
-                        ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
-                        LIMIT $5 OFFSET $6`,
-                        groupId
-                            ? [
-                                  tsQuery,
-                                  ilikeExact,
-                                  searchTermForTrgm,
-                                  ilikePartial,
-                                  pageSize,
-                                  offset,
-                                  groupId,
-                              ]
-                            : [
-                                  tsQuery,
-                                  ilikeExact,
-                                  searchTermForTrgm,
-                                  ilikePartial,
-                                  pageSize,
-                                  offset,
-                              ]
-                    );
-                    materialsQueryResult = result.rows;
+                            ${groupId ? " AND mig.id = $7" : ""}
+                            ORDER BY ${sorting_q}code_match_rank, rank DESC, m.name ASC
+                            LIMIT $5 OFFSET $6`,
+                            groupId
+                                ? [
+                                      tsQuery,
+                                      ilikeExact,
+                                      searchTermForTrgm,
+                                      ilikePartial,
+                                      pageSize,
+                                      offset,
+                                      groupId,
+                                  ]
+                                : [
+                                      tsQuery,
+                                      ilikeExact,
+                                      searchTermForTrgm,
+                                      ilikePartial,
+                                      pageSize,
+                                      offset,
+                                  ]
+                        );
+                        materialsQueryResult = result.rows;
+                    }
                 } else {
                     const countRes = await client.query(
                         `SELECT COUNT(*) AS total 
@@ -3099,67 +3295,121 @@ const Material = {
                 if (safeSearchTerm.length < 2) return [];
 
                 const safeLimit = Math.min(Number(limit) || 10, 25);
-                const searchTermForTrgm = safeSearchTerm;
+
+                const wildcard = parseWildcardSearch(safeSearchTerm);
+
+                const searchableFields = [
+                    "m.code",
+                    "m.name",
+                    "COALESCE(m.description, '')",
+                    "COALESCE(m.long_text, '')",
+                    "COALESCE(m.unit_of_measurement, '')",
+                    "COALESCE(m.alias1, '')",
+                    "COALESCE(m.alias2, '')",
+                    "COALESCE(m.alias3, '')",
+                ];
 
                 let whereClause =
                     "(m.dffromclient IS NULL OR m.dffromclient = false)";
+                const params = [];
 
-                const params = [searchTermForTrgm];
-                let paramIdx = 1;
+                if (wildcard) {
+                    const ilikePatterns = wildcard.segments.map(
+                        (_, i) => `'%' || $${i + 1} || '%'`
+                    );
+                    params.push(...wildcard.segments);
+                    whereClause += ` AND CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${ilikePatterns.join(", ")}])`;
 
-                const wordMatchClause = `(
-                    m.code ILIKE '%' || word || '%'
-                    OR m.name ILIKE '%' || word || '%'
-                    OR m.description ILIKE '%' || word || '%'
-                    OR m.long_text ILIKE '%' || word || '%'
-                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
-                    OR m.alias1 ILIKE '%' || word || '%'
-                    OR m.alias2 ILIKE '%' || word || '%'
-                    OR m.alias3 ILIKE '%' || word || '%'
-                )`;
+                    if (materialGroupCode) {
+                        whereClause += ` AND mig.code = $${params.length + 1}`;
+                        params.push(materialGroupCode);
+                    }
 
-                whereClause += ` AND (
-                    EXISTS (
-                        SELECT 1 FROM unnest(string_to_array($${paramIdx}, ' ')) AS word
-                        WHERE ${wordMatchClause}
-                    )
-                )`;
-                paramIdx++;
+                    const queryText = `
+                        SELECT 
+                            m.id,
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            m.unit_of_measurement,
+                            CASE
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
+                                ELSE NULL
+                            END AS combined_description
+                        FROM mat_sap_data m
+                        LEFT JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                        LEFT JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                        WHERE ${whereClause}
+                        ORDER BY m.code ASC
+                        LIMIT $${params.length + 1}
+                    `;
 
-                if (materialGroupCode) {
-                    whereClause += " AND mig.code = $2";
-                    params.push(materialGroupCode);
+                    params.push(safeLimit);
+                    const result = await client.query(queryText, params);
+                    return result.rows;
+                } else {
+                    params.push(safeSearchTerm);
+
+                    const wordMatchClause = `(
+                        m.code ILIKE '%' || word || '%'
+                        OR m.name ILIKE '%' || word || '%'
+                        OR m.description ILIKE '%' || word || '%'
+                        OR m.long_text ILIKE '%' || word || '%'
+                        OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                        OR m.alias1 ILIKE '%' || word || '%'
+                        OR m.alias2 ILIKE '%' || word || '%'
+                        OR m.alias3 ILIKE '%' || word || '%'
+                    )`;
+
+                    whereClause += ` AND (
+                        EXISTS (
+                            SELECT 1 FROM unnest(string_to_array($1, ' ')) AS word
+                            WHERE ${wordMatchClause}
+                        )
+                    )`;
+
+                    if (materialGroupCode) {
+                        whereClause += ` AND mig.code = $2`;
+                        params.push(materialGroupCode);
+                    }
+
+                    const queryText = `
+                        SELECT 
+                            m.id,
+                            m.code,
+                            m.name,
+                            m.description,
+                            m.alias1,
+                            m.alias2,
+                            m.alias3,
+                            m.unit_of_measurement,
+                            CASE
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
+                                ELSE NULL
+                            END AS combined_description
+                        FROM mat_sap_data m
+                        LEFT JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                        LEFT JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                        WHERE ${whereClause}
+                        ORDER BY
+                            (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.code ILIKE '%' || word || '%') DESC,
+                            (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.name ILIKE '%' || word || '%') DESC,
+                            (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.description ILIKE '%' || word || '%') DESC,
+                            m.code ASC
+                        LIMIT $${params.length + 1}
+                    `;
+
+                    params.push(safeLimit);
+                    const result = await client.query(queryText, params);
+                    return result.rows;
                 }
-
-                const queryText = `
-                    SELECT 
-                        m.id,
-                        m.code,
-                        m.name,
-                        m.description,
-                        m.alias1,
-                        m.alias2,
-                        m.alias3,
-                        m.unit_of_measurement,
-                        CASE
-                            WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
-                            WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
-                            WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
-                            ELSE NULL
-                        END AS combined_description
-                    FROM mat_sap_data m
-                    LEFT JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
-                    LEFT JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                    WHERE ${whereClause}
-                    ORDER BY
-                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.code ILIKE '%' || word || '%') DESC,
-                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.name ILIKE '%' || word || '%') DESC,
-                        (SELECT COUNT(*) FROM unnest(string_to_array($1, ' ')) AS word WHERE m.description ILIKE '%' || word || '%') DESC,
-                        m.code ASC
-                    LIMIT $${params.length + 1}
-                `;
-
-                params.push(safeLimit);
 
                 const result = await client.query(queryText, params);
                 return result.rows;
@@ -4152,70 +4402,132 @@ const Material = {
                 let subGroupCode = null;
                 if (searchTerm && searchTerm.trim() !== "") {
                     const safeSearchTerm = String(searchTerm || "").trim();
-                    const toTsQuery = input =>
-                        input
-                            .trim()
-                            .split(/\s+/)
-                            .map(word => `${word}:*`)
-                            .join(" & ");
-                    const tsQuery = toTsQuery(safeSearchTerm);
-                    const result = await client.query(
-                        `SELECT
-                            m.id,
-                            m.code,
-                            m.name,
-                            m.description,
-                            m.long_text,
-                            m.unit_of_measurement,
-                            CASE
-                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
-                                WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
-                                WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
-                                ELSE NULL
-                            END AS combined_description,
-                            CASE
-                                WHEN m.dffromclient IS TRUE THEN 'Inactive'
-                                ELSE 'Active'
-                            END AS status,
-                            u.fullname AS "user_fullname",
-                            m.alias1,
-                            m.alias2,
-                            m.alias3,
-                            m.filter_code_1,
-                            m.filter_code_2,
-                            m.material_sub_group_id,
-                            m.created_at,
-                            m.updated_at,
-                            m.dfFromClient,
-                            m.created_by,
-                            mis.code AS "subGroupCode",
-                            mis.name AS "subGroupName",
-                            mig.code AS "groupCode",
-                            mig.name AS "groupName"
-                        FROM mat_sap_data m
-                        JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
-                        JOIN mat_item_group mig ON mis.item_group_id = mig.id
-                        LEFT JOIN mst_user u ON m.created_by = u.user_id
-                        WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
-                        AND (
-                            to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
-                            OR (
-                                SELECT bool_and(
-                                    m.code ILIKE '%' || word || '%'
-                                    OR m.name ILIKE '%' || word || '%'
-                                    OR m.description ILIKE '%' || word || '%'
-                                    OR m.long_text ILIKE '%' || word || '%'
-                                    OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
-                                    OR m.alias1 ILIKE '%' || word || '%'
-                                    OR m.alias2 ILIKE '%' || word || '%'
-                                    OR m.alias3 ILIKE '%' || word || '%'
+                    const wildcard = parseWildcardSearch(safeSearchTerm);
+
+                    const searchableFields = [
+                        "m.code",
+                        "m.name",
+                        "COALESCE(m.description, '')",
+                        "COALESCE(m.long_text, '')",
+                        "COALESCE(m.unit_of_measurement, '')",
+                        "COALESCE(m.alias1, '')",
+                        "COALESCE(m.alias2, '')",
+                        "COALESCE(m.alias3, '')",
+                    ];
+
+                    let result;
+                    if (wildcard) {
+                        const ilikePatterns = wildcard.segments.map(
+                            (_, i) => `'%' || $${i + 1} || '%'`
+                        );
+                        result = await client.query(
+                            `SELECT
+                                m.id,
+                                m.code,
+                                m.name,
+                                m.description,
+                                m.long_text,
+                                m.unit_of_measurement,
+                                CASE
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                    WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
+                                    ELSE NULL
+                                END AS combined_description,
+                                CASE
+                                    WHEN m.dffromclient IS TRUE THEN 'Inactive'
+                                    ELSE 'Active'
+                                END AS status,
+                                u.fullname AS "user_fullname",
+                                m.alias1,
+                                m.alias2,
+                                m.alias3,
+                                m.filter_code_1,
+                                m.filter_code_2,
+                                m.material_sub_group_id,
+                                m.created_at,
+                                m.updated_at,
+                                m.dfFromClient,
+                                m.created_by,
+                                mis.code AS "subGroupCode",
+                                mis.name AS "subGroupName",
+                                mig.code AS "groupCode",
+                                mig.name AS "groupName"
+                            FROM mat_sap_data m
+                            JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                            JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                            LEFT JOIN mst_user u ON m.created_by = u.user_id
+                            WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                            AND CONCAT_WS(' ', ${searchableFields.join(", ")}) ILIKE ALL(ARRAY[${ilikePatterns.join(", ")}])
+                            ORDER BY m.code ASC, m.name ASC`,
+                            [...wildcard.segments]
+                        );
+                    } else {
+                        const toTsQuery = input =>
+                            input
+                                .trim()
+                                .split(/\s+/)
+                                .map(word => `${word}:*`)
+                                .join(" & ");
+                        const tsQuery = toTsQuery(safeSearchTerm);
+                        result = await client.query(
+                            `SELECT
+                                m.id,
+                                m.code,
+                                m.name,
+                                m.description,
+                                m.long_text,
+                                m.unit_of_measurement,
+                                CASE
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' AND m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN CONCAT(m.description, ' - ', m.long_text)
+                                    WHEN m.description IS NOT NULL AND TRIM(m.description) <> '' THEN m.description
+                                    WHEN m.long_text IS NOT NULL AND TRIM(m.long_text) <> '' THEN m.long_text
+                                    ELSE NULL
+                                END AS combined_description,
+                                CASE
+                                    WHEN m.dffromclient IS TRUE THEN 'Inactive'
+                                    ELSE 'Active'
+                                END AS status,
+                                u.fullname AS "user_fullname",
+                                m.alias1,
+                                m.alias2,
+                                m.alias3,
+                                m.filter_code_1,
+                                m.filter_code_2,
+                                m.material_sub_group_id,
+                                m.created_at,
+                                m.updated_at,
+                                m.dfFromClient,
+                                m.created_by,
+                                mis.code AS "subGroupCode",
+                                mis.name AS "subGroupName",
+                                mig.code AS "groupCode",
+                                mig.name AS "groupName"
+                            FROM mat_sap_data m
+                            JOIN mat_item_sub_group mis ON m.material_sub_group_id = mis.id
+                            JOIN mat_item_group mig ON mis.item_group_id = mig.id
+                            LEFT JOIN mst_user u ON m.created_by = u.user_id
+                            WHERE (m.dffromclient IS NULL OR m.dffromclient = false)
+                            AND (
+                                to_tsvector('english', COALESCE(m.name, '') || ' ' || COALESCE(m.description, '') || ' ' || COALESCE(m.long_text, '') || ' ' || COALESCE(m.unit_of_measurement, '') || ' ' || COALESCE(m.alias1, '') || ' ' || COALESCE(m.alias2, '') || ' ' || COALESCE(m.alias3, '') || ' ' || COALESCE(m.code, '')) @@ to_tsquery('english', $1)
+                                OR (
+                                    SELECT bool_and(
+                                        m.code ILIKE '%' || word || '%'
+                                        OR m.name ILIKE '%' || word || '%'
+                                        OR m.description ILIKE '%' || word || '%'
+                                        OR m.long_text ILIKE '%' || word || '%'
+                                        OR COALESCE(m.unit_of_measurement, '') ILIKE '%' || word || '%'
+                                        OR m.alias1 ILIKE '%' || word || '%'
+                                        OR m.alias2 ILIKE '%' || word || '%'
+                                        OR m.alias3 ILIKE '%' || word || '%'
+                                    )
+                                    FROM unnest(string_to_array($2, ' ')) AS word
                                 )
-                                FROM unnest(string_to_array($2, ' ')) AS word
                             )
-                        )
-                        ORDER BY m.code ASC, m.name ASC`,
-                        [tsQuery, safeSearchTerm]
-                    );
+                            ORDER BY m.code ASC, m.name ASC`,
+                            [tsQuery, safeSearchTerm]
+                        );
+                    }
                     materialsQueryResult = result.rows;
                 } else {
                     let query = `
